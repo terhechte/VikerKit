@@ -37,6 +37,8 @@ final class VikerExampleEditorContent: NSObject {
     private var mouseSelectionAnchor: EditorMouseCell?
     private var mouseSelectionMode: VikerSelectionMode = .character
     private var isExtendingMouseSelection = false
+    private var mouseSelectionPreservesEditorMode = false
+    private var transientSelection: EditorTransientSelection?
     private let showsToolbar: Bool
     private let autosaves: Bool
     private let autosaveDelay: TimeInterval
@@ -320,6 +322,25 @@ final class VikerExampleEditorContent: NSObject {
         editorView.onPaste = { [weak self] text in
             self?.paste(text)
         }
+        editorView.onCopy = { [weak self] in
+            self?.copySelection() ?? false
+        }
+        editorView.onCut = { [weak self] in
+            do {
+                return try self?.cutSelection() ?? false
+            } catch {
+                self?.present(error)
+                return true
+            }
+        }
+        editorView.onSelectAll = { [weak self] in
+            do {
+                return try self?.selectAllInInsertMode() ?? false
+            } catch {
+                self?.present(error)
+                return true
+            }
+        }
         editorView.onSave = { [weak self] in
             self?.saveDocument()
         }
@@ -335,6 +356,10 @@ final class VikerExampleEditorContent: NSObject {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        if handleInsertSelectionShortcut(event) {
+            return true
+        }
+
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
             guard event.charactersIgnoringModifiers?.lowercased() == "s" else { return false }
@@ -346,6 +371,14 @@ final class VikerExampleEditorContent: NSObject {
 
         do {
             statusOverride = nil
+            let deletesOnly = try handleTransientSelectionReplacement(event, keyEvent: keyEvent)
+            if deletesOnly {
+                clearEditorError(source: .operation)
+                refreshSnapshot()
+                scheduleAutosaveIfNeeded()
+                return true
+            }
+
             let effects = try editor.processKey(event: keyEvent)
             applyEffects(effects)
             clearEditorError(source: .operation)
@@ -361,6 +394,11 @@ final class VikerExampleEditorContent: NSObject {
         guard !text.isEmpty else { return }
         do {
             statusOverride = nil
+            if Self.isTextSelectionMode(snapshot.mode), transientSelection != nil {
+                _ = try deleteTransientSelectionContents()
+            } else {
+                transientSelection = nil
+            }
             let effects = try editor.inputText(text: text)
             applyEffects(effects)
             clearEditorError(source: .operation)
@@ -376,20 +414,28 @@ final class VikerExampleEditorContent: NSObject {
             statusOverride = nil
             mouseSelectionAnchor = nil
             isExtendingMouseSelection = false
+            mouseSelectionPreservesEditorMode = false
 
-            if cell.clickCount >= 3 {
+            if Self.isTextSelectionMode(snapshot.mode) {
+                try handleInsertMouseDown(cell)
+            } else if cell.clickCount >= 3 {
+                transientSelection = nil
                 try selectLine(at: cell)
             } else if cell.clickCount == 2 {
+                transientSelection = nil
                 try selectWord(at: cell)
             } else if cell.modifierFlags.contains(.shift) {
+                transientSelection = nil
                 let position = try position(for: cell)
                 _ = try editor.extendSelection(row: position.row, column: position.column)
             } else {
+                transientSelection = nil
                 try editor.clearSelection()
                 let position = try position(for: cell)
                 _ = try editor.setCursor(row: position.row, column: position.column)
                 mouseSelectionAnchor = cell
                 mouseSelectionMode = cell.modifierFlags.contains(.option) ? .block : .character
+                mouseSelectionPreservesEditorMode = snapshot.mode == .insert || snapshot.mode == .replace
             }
 
             clearEditorError(source: .operation)
@@ -402,6 +448,21 @@ final class VikerExampleEditorContent: NSObject {
     private func handleMouseDragged(_ cell: EditorMouseCell) {
         do {
             statusOverride = nil
+            if mouseSelectionPreservesEditorMode {
+                guard let anchor = mouseSelectionAnchor else { return }
+                let anchorPosition = try position(for: anchor)
+                let cursorPosition = try position(for: cell)
+                try setTransientSelection(
+                    anchor: anchorPosition,
+                    cursor: cursorPosition,
+                    mode: mouseSelectionMode,
+                    usesInsertionEndpoints: true
+                )
+                clearEditorError(source: .operation)
+                refreshSnapshot()
+                return
+            }
+
             if let anchor = mouseSelectionAnchor, !isExtendingMouseSelection {
                 let position = try position(for: anchor)
                 _ = try editor.beginSelection(row: position.row, column: position.column, mode: mouseSelectionMode)
@@ -420,6 +481,391 @@ final class VikerExampleEditorContent: NSObject {
     private func finishMouseSelection() {
         mouseSelectionAnchor = nil
         isExtendingMouseSelection = false
+        mouseSelectionPreservesEditorMode = false
+    }
+
+    private func handleInsertMouseDown(_ cell: EditorMouseCell) throws {
+        let position = try position(for: cell)
+
+        if cell.clickCount >= 3 {
+            let lineEnd = try lineEndPosition(row: position.row)
+            try setTransientSelection(
+                anchor: VikerPosition(row: position.row, column: 0),
+                cursor: lineEnd,
+                mode: .line,
+                usesInsertionEndpoints: false
+            )
+        } else if cell.clickCount == 2 {
+            if let wordRange = try wordSelectionRange(at: position) {
+                try setTransientSelection(
+                    anchor: wordRange.start,
+                    cursor: wordRange.end,
+                    mode: .character,
+                    usesInsertionEndpoints: true
+                )
+            } else {
+                try editor.clearSelection()
+                _ = try editor.setCursor(row: position.row, column: position.column)
+                transientSelection = nil
+            }
+        } else if cell.modifierFlags.contains(.shift) {
+            let anchor = transientSelection?.anchor ?? snapshot.cursor
+            try setTransientSelection(
+                anchor: anchor,
+                cursor: position,
+                mode: .character,
+                usesInsertionEndpoints: true
+            )
+        } else {
+            try editor.clearSelection()
+            _ = try editor.setCursor(row: position.row, column: position.column)
+            transientSelection = nil
+            mouseSelectionAnchor = cell
+            mouseSelectionMode = cell.modifierFlags.contains(.option) ? .block : .character
+            mouseSelectionPreservesEditorMode = true
+        }
+    }
+
+    private func handleInsertSelectionShortcut(_ event: NSEvent) -> Bool {
+        guard Self.isTextSelectionMode(snapshot.mode) else { return false }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        do {
+            if flags.contains(.command), !flags.contains(.option), !flags.contains(.control) {
+                switch event.charactersIgnoringModifiers?.lowercased() {
+                case "a":
+                    return try selectAllInInsertMode()
+                case "c":
+                    return copySelection()
+                case "x":
+                    return try cutSelection()
+                default:
+                    break
+                }
+            }
+
+            guard flags.contains(.shift) else { return false }
+            guard [123, 124, 125, 126].contains(Int(event.keyCode)) else { return false }
+
+            let current = transientSelection?.cursor ?? snapshot.cursor
+            let target: VikerPosition
+            if flags.contains(.command) {
+                switch event.keyCode {
+                case 123:
+                    target = VikerPosition(row: current.row, column: 0)
+                case 124:
+                    target = try lineEndPosition(row: current.row)
+                case 125:
+                    target = try documentEndPosition()
+                case 126:
+                    target = VikerPosition(row: 0, column: 0)
+                default:
+                    return false
+                }
+            } else if flags.contains(.option) {
+                switch event.keyCode {
+                case 123:
+                    target = try previousWordBoundary(from: current)
+                case 124:
+                    target = try nextWordBoundary(from: current)
+                case 125:
+                    target = try lineEndPosition(row: current.row)
+                case 126:
+                    target = VikerPosition(row: current.row, column: 0)
+                default:
+                    return false
+                }
+            } else {
+                switch event.keyCode {
+                case 123:
+                    target = try previousInsertionPosition(from: current)
+                case 124:
+                    target = try nextInsertionPosition(from: current)
+                case 125:
+                    target = try verticalInsertionPosition(from: current, rowOffset: 1)
+                case 126:
+                    target = try verticalInsertionPosition(from: current, rowOffset: -1)
+                default:
+                    return false
+                }
+            }
+
+            let anchor = transientSelection?.anchor ?? snapshot.cursor
+            statusOverride = nil
+            try setTransientSelection(
+                anchor: anchor,
+                cursor: target,
+                mode: .character,
+                usesInsertionEndpoints: true
+            )
+            clearEditorError(source: .operation)
+            refreshSnapshot()
+            return true
+        } catch {
+            present(error)
+            return true
+        }
+    }
+
+    private func handleTransientSelectionReplacement(_ event: NSEvent, keyEvent: VikerKeyEvent) throws -> Bool {
+        guard Self.isTextSelectionMode(snapshot.mode), transientSelection != nil else {
+            transientSelection = nil
+            return false
+        }
+
+        if keyEvent.key == .escape {
+            transientSelection = nil
+            return false
+        }
+
+        if keyEvent.key == .backspace || event.keyCode == 117 {
+            _ = try deleteTransientSelectionContents()
+            return true
+        }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isPlainTextInput = keyEvent.key == .character
+            && !flags.contains(.command)
+            && !flags.contains(.control)
+            && !flags.contains(.option)
+        let replacesSelection = isPlainTextInput || keyEvent.key == .enter || keyEvent.key == .tab
+
+        if replacesSelection {
+            _ = try deleteTransientSelectionContents()
+        } else {
+            transientSelection = nil
+        }
+
+        return false
+    }
+
+    private func setTransientSelection(
+        anchor: VikerPosition,
+        cursor: VikerPosition,
+        mode: VikerSelectionMode,
+        usesInsertionEndpoints: Bool
+    ) throws {
+        _ = try editor.setCursor(row: cursor.row, column: cursor.column)
+
+        if mode == .character, usesInsertionEndpoints, anchor == cursor {
+            transientSelection = nil
+            return
+        }
+
+        transientSelection = EditorTransientSelection(
+            anchor: anchor,
+            cursor: cursor,
+            mode: mode,
+            usesInsertionEndpoints: usesInsertionEndpoints
+        )
+    }
+
+    private func copySelection() -> Bool {
+        guard Self.isTextSelectionMode(snapshot.mode),
+              let text = selectedTransientText(),
+              !text.isEmpty else {
+            return false
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        return true
+    }
+
+    private func cutSelection() throws -> Bool {
+        guard copySelection() else { return false }
+        _ = try deleteTransientSelectionContents()
+        clearEditorError(source: .operation)
+        refreshSnapshot()
+        scheduleAutosaveIfNeeded()
+        return true
+    }
+
+    private func selectAllInInsertMode() throws -> Bool {
+        guard Self.isTextSelectionMode(snapshot.mode) else { return false }
+        try setTransientSelection(
+            anchor: VikerPosition(row: 0, column: 0),
+            cursor: documentEndPosition(),
+            mode: .character,
+            usesInsertionEndpoints: true
+        )
+        clearEditorError(source: .operation)
+        refreshSnapshot()
+        return true
+    }
+
+    @discardableResult
+    private func deleteTransientSelectionContents() throws -> Bool {
+        guard let selectionRange = transientTextRange(in: snapshot.text), !selectionRange.isEmpty else {
+            transientSelection = nil
+            return false
+        }
+
+        let newText = Self.replacingUnicodeScalars(
+            in: snapshot.text,
+            range: selectionRange,
+            with: ""
+        )
+        try editor.setText(text: newText)
+        let cursor = Self.position(forScalarOffset: selectionRange.lowerBound, in: newText)
+        _ = try editor.setCursor(row: cursor.row, column: cursor.column)
+        transientSelection = nil
+        return true
+    }
+
+    private func selectedTransientText() -> String? {
+        guard let selectionRange = transientTextRange(in: snapshot.text), !selectionRange.isEmpty else {
+            return nil
+        }
+
+        return Self.stringBySelectingUnicodeScalars(in: snapshot.text, range: selectionRange)
+    }
+
+    private func transientTextRange(in text: String) -> Range<Int>? {
+        guard let transientSelection else { return nil }
+        let scalarCount = text.unicodeScalars.count
+
+        if transientSelection.mode == .line {
+            let starts = Self.lineStartOffsets(in: text)
+            guard !starts.isEmpty else { return nil }
+            let startRow = min(Self.intClamped(min(transientSelection.anchor.row, transientSelection.cursor.row)), starts.count - 1)
+            let endRow = min(Self.intClamped(max(transientSelection.anchor.row, transientSelection.cursor.row)), starts.count - 1)
+            let startOffset = starts[startRow]
+            let endOffset = endRow + 1 < starts.count ? starts[endRow + 1] : scalarCount
+            return startOffset..<endOffset
+        }
+
+        var anchorOffset = Self.scalarOffset(for: transientSelection.anchor, in: text)
+        var cursorOffset = Self.scalarOffset(for: transientSelection.cursor, in: text)
+        if !transientSelection.usesInsertionEndpoints {
+            if anchorOffset <= cursorOffset {
+                cursorOffset = min(cursorOffset + 1, scalarCount)
+            } else {
+                anchorOffset = min(anchorOffset + 1, scalarCount)
+            }
+        }
+
+        return min(anchorOffset, cursorOffset)..<max(anchorOffset, cursorOffset)
+    }
+
+    private func wordSelectionRange(at position: VikerPosition) throws -> (start: VikerPosition, end: VikerPosition)? {
+        let line = try editor.line(row: position.row)
+        let scalars = Array(line.unicodeScalars)
+        guard !scalars.isEmpty else { return nil }
+
+        var index = min(Self.intClamped(position.column), scalars.count - 1)
+        if !Self.isWordScalar(scalars[index]), index > 0, Self.isWordScalar(scalars[index - 1]) {
+            index -= 1
+        }
+        guard Self.isWordScalar(scalars[index]) else { return nil }
+
+        var start = index
+        while start > 0, Self.isWordScalar(scalars[start - 1]) {
+            start -= 1
+        }
+
+        var end = index + 1
+        while end < scalars.count, Self.isWordScalar(scalars[end]) {
+            end += 1
+        }
+
+        return (
+            VikerPosition(row: position.row, column: UInt64(start)),
+            VikerPosition(row: position.row, column: UInt64(end))
+        )
+    }
+
+    private func previousInsertionPosition(from position: VikerPosition) throws -> VikerPosition {
+        if position.column > 0 {
+            return VikerPosition(row: position.row, column: position.column - 1)
+        }
+
+        guard position.row > 0 else { return position }
+        let row = position.row - 1
+        return try lineEndPosition(row: row)
+    }
+
+    private func nextInsertionPosition(from position: VikerPosition) throws -> VikerPosition {
+        let lineEnd = try lineEndPosition(row: position.row)
+        if position.column < lineEnd.column {
+            return VikerPosition(row: position.row, column: position.column + 1)
+        }
+
+        let lineCount = try editor.lineCount()
+        guard position.row + 1 < lineCount else { return lineEnd }
+        return VikerPosition(row: position.row + 1, column: 0)
+    }
+
+    private func verticalInsertionPosition(from position: VikerPosition, rowOffset: Int) throws -> VikerPosition {
+        let lineCount = max(Self.intClamped(try editor.lineCount()), 1)
+        let row = Self.clamped(Self.intClamped(position.row) + rowOffset, lowerBound: 0, upperBound: lineCount - 1)
+        let lineEnd = try lineEndPosition(row: UInt64(row))
+        return VikerPosition(row: UInt64(row), column: min(position.column, lineEnd.column))
+    }
+
+    private func previousWordBoundary(from position: VikerPosition) throws -> VikerPosition {
+        var row = position.row
+        var scalars = Array(try editor.line(row: row).unicodeScalars)
+        var index = min(Self.intClamped(position.column), scalars.count)
+
+        while true {
+            if index > 0 {
+                index -= 1
+                while index > 0, !Self.isWordScalar(scalars[index]) {
+                    index -= 1
+                }
+                guard Self.isWordScalar(scalars[index]) else {
+                    return VikerPosition(row: row, column: 0)
+                }
+                while index > 0, Self.isWordScalar(scalars[index - 1]) {
+                    index -= 1
+                }
+                return VikerPosition(row: row, column: UInt64(index))
+            }
+
+            guard row > 0 else {
+                return VikerPosition(row: 0, column: 0)
+            }
+            row -= 1
+            scalars = Array(try editor.line(row: row).unicodeScalars)
+            index = scalars.count
+        }
+    }
+
+    private func nextWordBoundary(from position: VikerPosition) throws -> VikerPosition {
+        let lineCount = try editor.lineCount()
+        var row = position.row
+        var scalars = Array(try editor.line(row: row).unicodeScalars)
+        var index = min(Self.intClamped(position.column), scalars.count)
+
+        while true {
+            if index < scalars.count {
+                while index < scalars.count, !Self.isWordScalar(scalars[index]) {
+                    index += 1
+                }
+                while index < scalars.count, Self.isWordScalar(scalars[index]) {
+                    index += 1
+                }
+                return VikerPosition(row: row, column: UInt64(index))
+            }
+
+            guard row + 1 < lineCount else {
+                return VikerPosition(row: row, column: UInt64(index))
+            }
+            row += 1
+            scalars = Array(try editor.line(row: row).unicodeScalars)
+            index = 0
+        }
+    }
+
+    private func lineEndPosition(row: UInt64) throws -> VikerPosition {
+        let line = try editor.line(row: row)
+        return VikerPosition(row: row, column: UInt64(line.unicodeScalars.count))
+    }
+
+    private func documentEndPosition() throws -> VikerPosition {
+        let lineCount = max(try editor.lineCount(), 1)
+        return try lineEndPosition(row: lineCount - 1)
     }
 
     private func selectWord(at cell: EditorMouseCell) throws {
@@ -571,6 +1017,7 @@ final class VikerExampleEditorContent: NSObject {
                     editor: editor,
                     snapshot: snapshot,
                     diagnostics: lspDiagnostics,
+                    transientSelection: transientSelection,
                     renderError: &renderError
                 ),
                 viewportWidth: scrollView.contentView.bounds.width
@@ -1209,6 +1656,7 @@ final class VikerExampleEditorContent: NSObject {
         editor: VikerEditor,
         snapshot: VikerSnapshot,
         diagnostics: [VikerDiagnostic],
+        transientSelection: EditorTransientSelection? = nil,
         renderError: inout String?
     ) throws -> EditorRenderState {
         let lineCount = max(intClamped(snapshot.lineCount), 1)
@@ -1256,6 +1704,14 @@ final class VikerExampleEditorContent: NSObject {
         let visualAnchorViewCell = snapshot.visualAnchor.map {
             Self.viewCell(for: $0, displayRows: displayRows, lineDisplayWidths: lineDisplayWidths)
         }
+        let renderSelection = Self.renderSelection(
+            snapshot: snapshot,
+            transientSelection: transientSelection,
+            cursorViewCell: cursorViewCell,
+            visualAnchorViewCell: visualAnchorViewCell,
+            displayRows: displayRows,
+            lineDisplayWidths: lineDisplayWidths
+        )
 
         return EditorRenderState(
             snapshot: snapshot,
@@ -1265,8 +1721,135 @@ final class VikerExampleEditorContent: NSObject {
             diagnosticRows: diagnosticRows,
             syntaxLanguage: try editor.syntaxLanguage(),
             cursorViewCell: cursorViewCell,
-            visualAnchorViewCell: visualAnchorViewCell
+            visualAnchorViewCell: visualAnchorViewCell,
+            selection: renderSelection
         )
+    }
+
+    private static func renderSelection(
+        snapshot: VikerSnapshot,
+        transientSelection: EditorTransientSelection?,
+        cursorViewCell: VikerViewCell?,
+        visualAnchorViewCell: VikerViewCell?,
+        displayRows: [[VikerDisplayCell]],
+        lineDisplayWidths: [Int]
+    ) -> EditorRenderSelection? {
+        if let transientSelection {
+            return EditorRenderSelection(
+                anchor: viewCell(
+                    for: transientSelection.anchor,
+                    displayRows: displayRows,
+                    lineDisplayWidths: lineDisplayWidths
+                ),
+                cursor: viewCell(
+                    for: transientSelection.cursor,
+                    displayRows: displayRows,
+                    lineDisplayWidths: lineDisplayWidths
+                ),
+                mode: transientSelection.mode,
+                usesInsertionEndpoints: transientSelection.usesInsertionEndpoints
+            )
+        }
+
+        guard let cursorViewCell,
+              let visualAnchorViewCell,
+              let mode = selectionMode(for: snapshot.mode) else {
+            return nil
+        }
+
+        return EditorRenderSelection(
+            anchor: visualAnchorViewCell,
+            cursor: cursorViewCell,
+            mode: mode,
+            usesInsertionEndpoints: false
+        )
+    }
+
+    private static func selectionMode(for mode: VikerMode) -> VikerSelectionMode? {
+        switch mode {
+        case .visual:
+            return .character
+        case .visualLine:
+            return .line
+        case .visualBlock:
+            return .block
+        default:
+            return nil
+        }
+    }
+
+    private static func isTextSelectionMode(_ mode: VikerMode) -> Bool {
+        mode == .insert || mode == .replace
+    }
+
+    private static func isWordScalar(_ scalar: UnicodeScalar) -> Bool {
+        scalar == "_" || CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private static func lineStartOffsets(in text: String) -> [Int] {
+        var starts = [0]
+        for (offset, scalar) in text.unicodeScalars.enumerated() where scalar == "\n" {
+            starts.append(offset + 1)
+        }
+        return starts
+    }
+
+    private static func scalarOffset(for position: VikerPosition, in text: String) -> Int {
+        let starts = lineStartOffsets(in: text)
+        guard !starts.isEmpty else { return 0 }
+
+        let row = clamped(intClamped(position.row), lowerBound: 0, upperBound: starts.count - 1)
+        let scalarCount = text.unicodeScalars.count
+        let lineStart = starts[row]
+        let lineEnd = row + 1 < starts.count ? starts[row + 1] - 1 : scalarCount
+        return clamped(lineStart + intClamped(position.column), lowerBound: lineStart, upperBound: lineEnd)
+    }
+
+    private static func position(forScalarOffset offset: Int, in text: String) -> VikerPosition {
+        let starts = lineStartOffsets(in: text)
+        guard !starts.isEmpty else {
+            return VikerPosition(row: 0, column: 0)
+        }
+
+        let scalarCount = text.unicodeScalars.count
+        let clampedOffset = clamped(offset, lowerBound: 0, upperBound: scalarCount)
+        var row = 0
+        for index in starts.indices {
+            if starts[index] <= clampedOffset {
+                row = index
+            } else {
+                break
+            }
+        }
+
+        let lineStart = starts[row]
+        let lineEnd = row + 1 < starts.count ? starts[row + 1] - 1 : scalarCount
+        let column = clamped(clampedOffset - lineStart, lowerBound: 0, upperBound: max(lineEnd - lineStart, 0))
+        return VikerPosition(row: UInt64(row), column: UInt64(column))
+    }
+
+    private static func stringBySelectingUnicodeScalars(in text: String, range: Range<Int>) -> String {
+        let scalars = Array(text.unicodeScalars)
+        let clampedRange = clampedUnicodeScalarRange(range, count: scalars.count)
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: scalars[clampedRange])
+        return String(view)
+    }
+
+    private static func replacingUnicodeScalars(in text: String, range: Range<Int>, with replacement: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        let clampedRange = clampedUnicodeScalarRange(range, count: scalars.count)
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: scalars[..<clampedRange.lowerBound])
+        view.append(contentsOf: replacement.unicodeScalars)
+        view.append(contentsOf: scalars[clampedRange.upperBound...])
+        return String(view)
+    }
+
+    private static func clampedUnicodeScalarRange(_ range: Range<Int>, count: Int) -> Range<Int> {
+        let lowerBound = clamped(range.lowerBound, lowerBound: 0, upperBound: count)
+        let upperBound = clamped(range.upperBound, lowerBound: lowerBound, upperBound: count)
+        return lowerBound..<upperBound
     }
 
     private static func intClamped(_ value: UInt64) -> Int {
@@ -1489,6 +2072,20 @@ private struct EditorMouseCell {
     let modifierFlags: NSEvent.ModifierFlags
 }
 
+private struct EditorTransientSelection {
+    let anchor: VikerPosition
+    let cursor: VikerPosition
+    let mode: VikerSelectionMode
+    let usesInsertionEndpoints: Bool
+}
+
+private struct EditorRenderSelection {
+    let anchor: VikerViewCell
+    let cursor: VikerViewCell
+    let mode: VikerSelectionMode
+    let usesInsertionEndpoints: Bool
+}
+
 private struct EditorRenderState {
     let snapshot: VikerSnapshot
     let displayRows: [[VikerDisplayCell]]
@@ -1498,6 +2095,7 @@ private struct EditorRenderState {
     let syntaxLanguage: VikerSyntaxLanguage?
     let cursorViewCell: VikerViewCell?
     let visualAnchorViewCell: VikerViewCell?
+    let selection: EditorRenderSelection?
 
     var rowCount: Int {
         max(max(displayRows.count, lineDisplayWidths.count), 1)
@@ -1533,6 +2131,9 @@ private final class VikerEditorCanvasView: NSView {
     var onFocus: (() -> Void)?
     var onKeyDown: ((NSEvent) -> Bool)?
     var onPaste: ((String) -> Void)?
+    var onCopy: (() -> Bool)?
+    var onCut: (() -> Bool)?
+    var onSelectAll: (() -> Bool)?
     var onSave: (() -> Void)?
     var onMouseDown: ((EditorMouseCell) -> Void)?
     var onMouseDragged: ((EditorMouseCell) -> Void)?
@@ -1605,6 +2206,7 @@ private final class VikerEditorCanvasView: NSView {
         dirtyRect.fill()
 
         drawGutter(in: dirtyRect)
+        drawActiveLine(in: dirtyRect)
         drawSelection(in: dirtyRect)
         drawLines(in: dirtyRect)
         drawDiagnostics(in: dirtyRect)
@@ -1646,11 +2248,37 @@ private final class VikerEditorCanvasView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.command),
-              event.charactersIgnoringModifiers?.lowercased() == "s" else {
+              !flags.contains(.option),
+              !flags.contains(.control),
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
             return super.performKeyEquivalent(with: event)
         }
-        onSave?()
-        return true
+
+        switch key {
+        case "s":
+            onSave?()
+            return true
+        case "a":
+            return onSelectAll?() ?? super.performKeyEquivalent(with: event)
+        case "c":
+            return onCopy?() ?? super.performKeyEquivalent(with: event)
+        case "x":
+            return onCut?() ?? super.performKeyEquivalent(with: event)
+        default:
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    @objc func copy(_ sender: Any?) {
+        _ = onCopy?()
+    }
+
+    @objc func cut(_ sender: Any?) {
+        _ = onCut?()
+    }
+
+    override func selectAll(_ sender: Any?) {
+        _ = onSelectAll?()
     }
 
     @objc func paste(_ sender: Any?) {
@@ -1668,16 +2296,8 @@ private final class VikerEditorCanvasView: NSView {
         let range = visibleLineRange(in: dirtyRect)
         guard !range.isEmpty else { return }
 
-        let activeRow = renderState.cursorViewCell.map {
-            Self.clamped(Self.intClamped($0.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
-        } ?? Self.clamped(Self.intClamped(renderState.snapshot.cursor.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
         for index in range {
             let rowY = verticalInset + CGFloat(index) * lineHeight
-            if index == activeRow {
-                VikerExampleDesign.Color.editorActiveLineBackground.setFill()
-                NSRect(x: gutterWidth, y: rowY, width: bounds.width - gutterWidth, height: lineHeight).fill()
-            }
-
             let lineNumber = "\(index + 1)" as NSString
             let numberSize = lineNumber.size(withAttributes: lineNumberAttributes)
             lineNumber.draw(
@@ -1689,9 +2309,22 @@ private final class VikerEditorCanvasView: NSView {
         }
     }
 
+    private func drawActiveLine(in dirtyRect: NSRect) {
+        let range = visibleLineRange(in: dirtyRect)
+        guard !range.isEmpty else { return }
+
+        let activeRow = renderState.cursorViewCell.map {
+            Self.clamped(Self.intClamped($0.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
+        } ?? Self.clamped(Self.intClamped(renderState.snapshot.cursor.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
+        guard range.contains(activeRow) else { return }
+
+        VikerExampleDesign.Color.editorActiveLineBackground.setFill()
+        let rowY = verticalInset + CGFloat(activeRow) * lineHeight
+        NSRect(x: gutterWidth, y: rowY, width: bounds.width - gutterWidth, height: lineHeight).fill()
+    }
+
     private func drawSelection(in dirtyRect: NSRect) {
-        guard let anchor = renderState.visualAnchorViewCell,
-              let cursor = renderState.cursorViewCell else {
+        guard let selection = renderState.selection else {
             return
         }
 
@@ -1700,12 +2333,12 @@ private final class VikerEditorCanvasView: NSView {
 
         let start: VikerViewCell
         let end: VikerViewCell
-        if Self.precedes(cursor, anchor) {
-            start = cursor
-            end = anchor
+        if Self.precedes(selection.cursor, selection.anchor) {
+            start = selection.cursor
+            end = selection.anchor
         } else {
-            start = anchor
-            end = cursor
+            start = selection.anchor
+            end = selection.cursor
         }
 
         let startRow = Self.clamped(Self.intClamped(start.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
@@ -1714,12 +2347,24 @@ private final class VikerEditorCanvasView: NSView {
         VikerExampleDesign.Color.editorSelectionBackground.setFill()
         for row in visible where row >= startRow && row <= endRow {
             let y = verticalInset + CGFloat(row) * lineHeight
-            switch renderState.snapshot.mode {
-            case .visualLine:
+            if selection.usesInsertionEndpoints, selection.mode == .character {
+                insertionRangeSelectionRect(
+                    start: start,
+                    end: end,
+                    row: row,
+                    y: y,
+                    startRow: startRow,
+                    endRow: endRow
+                )?.fill()
+                continue
+            }
+
+            switch selection.mode {
+            case .line:
                 fullLineSelectionRect(row: row, y: y).fill()
-            case .visualBlock:
+            case .block:
                 blockSelectionRect(start: start, end: end, row: row, y: y).fill()
-            default:
+            case .character:
                 characterSelectionRect(start: start, end: end, row: row, y: y, startRow: startRow, endRow: endRow).fill()
             }
         }
@@ -1907,6 +2552,40 @@ private final class VikerEditorCanvasView: NSView {
             x: textOriginX + CGFloat(max(startColumn, 0)) * charWidth,
             y: y,
             width: CGFloat(max(endColumn - startColumn, 1)) * charWidth,
+            height: lineHeight
+        )
+    }
+
+    private func insertionRangeSelectionRect(
+        start: VikerViewCell,
+        end: VikerViewCell,
+        row: Int,
+        y: CGFloat,
+        startRow: Int,
+        endRow: Int
+    ) -> NSRect? {
+        let startColumn: Int
+        let endColumn: Int
+
+        if startRow == endRow {
+            startColumn = min(Self.intClamped(start.column), Self.intClamped(end.column))
+            endColumn = max(Self.intClamped(start.column), Self.intClamped(end.column))
+        } else if row == startRow {
+            startColumn = Self.intClamped(start.column)
+            endColumn = max(renderState.lineDisplayWidth(row: row), startColumn)
+        } else if row == endRow {
+            startColumn = 0
+            endColumn = Self.intClamped(end.column)
+        } else {
+            startColumn = 0
+            endColumn = renderState.lineDisplayWidth(row: row)
+        }
+
+        guard endColumn > startColumn else { return nil }
+        return NSRect(
+            x: textOriginX + CGFloat(max(startColumn, 0)) * charWidth,
+            y: y,
+            width: CGFloat(endColumn - startColumn) * charWidth,
             height: lineHeight
         )
     }
