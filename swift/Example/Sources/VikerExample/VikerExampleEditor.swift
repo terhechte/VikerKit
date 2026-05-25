@@ -39,6 +39,7 @@ final class VikerExampleEditorContent: NSObject {
     private var isExtendingMouseSelection = false
     private var mouseSelectionPreservesEditorMode = false
     private var transientSelection: EditorTransientSelection?
+    private var transientSelectionDrag: EditorTransientSelectionDrag?
     private let showsToolbar: Bool
     private let autosaves: Bool
     private let autosaveDelay: TimeInterval
@@ -371,6 +372,7 @@ final class VikerExampleEditorContent: NSObject {
 
         do {
             statusOverride = nil
+            transientSelectionDrag = nil
             let deletesOnly = try handleTransientSelectionReplacement(event, keyEvent: keyEvent)
             if deletesOnly {
                 clearEditorError(source: .operation)
@@ -394,6 +396,7 @@ final class VikerExampleEditorContent: NSObject {
         guard !text.isEmpty else { return }
         do {
             statusOverride = nil
+            transientSelectionDrag = nil
             if Self.isTextSelectionMode(snapshot.mode), transientSelection != nil {
                 _ = try deleteTransientSelectionContents()
             } else {
@@ -415,6 +418,7 @@ final class VikerExampleEditorContent: NSObject {
             mouseSelectionAnchor = nil
             isExtendingMouseSelection = false
             mouseSelectionPreservesEditorMode = false
+            transientSelectionDrag = nil
 
             if Self.isTextSelectionMode(snapshot.mode) {
                 try handleInsertMouseDown(cell)
@@ -448,6 +452,18 @@ final class VikerExampleEditorContent: NSObject {
     private func handleMouseDragged(_ cell: EditorMouseCell) {
         do {
             statusOverride = nil
+            if var selectionDrag = transientSelectionDrag {
+                let dropPosition = try position(for: cell)
+                selectionDrag.dropPosition = dropPosition
+                selectionDrag.hasMoved = true
+                selectionDrag.copies = cell.modifierFlags.contains(.option)
+                transientSelectionDrag = selectionDrag
+                _ = try editor.setCursor(row: dropPosition.row, column: dropPosition.column)
+                clearEditorError(source: .operation)
+                refreshSnapshot()
+                return
+            }
+
             if mouseSelectionPreservesEditorMode {
                 guard let anchor = mouseSelectionAnchor else { return }
                 let anchorPosition = try position(for: anchor)
@@ -479,13 +495,28 @@ final class VikerExampleEditorContent: NSObject {
     }
 
     private func finishMouseSelection() {
-        mouseSelectionAnchor = nil
-        isExtendingMouseSelection = false
-        mouseSelectionPreservesEditorMode = false
+        do {
+            if let selectionDrag = transientSelectionDrag, selectionDrag.hasMoved {
+                try finishTransientSelectionDrag(selectionDrag)
+            }
+            mouseSelectionAnchor = nil
+            isExtendingMouseSelection = false
+            mouseSelectionPreservesEditorMode = false
+            transientSelectionDrag = nil
+        } catch {
+            transientSelectionDrag = nil
+            present(error)
+        }
     }
 
     private func handleInsertMouseDown(_ cell: EditorMouseCell) throws {
         let position = try position(for: cell)
+
+        if cell.clickCount == 1,
+           !cell.modifierFlags.contains(.shift),
+           try beginTransientSelectionDragIfNeeded(at: position, copies: cell.modifierFlags.contains(.option)) {
+            return
+        }
 
         if cell.clickCount >= 3 {
             let lineEnd = try lineEndPosition(row: position.row)
@@ -658,6 +689,83 @@ final class VikerExampleEditorContent: NSObject {
             mode: mode,
             usesInsertionEndpoints: usesInsertionEndpoints
         )
+    }
+
+    private func beginTransientSelectionDragIfNeeded(at position: VikerPosition, copies: Bool) throws -> Bool {
+        guard let selectedText = selectedTransientText(),
+              !selectedText.isEmpty,
+              let selectedRange = transientTextRange(in: snapshot.text),
+              !selectedRange.isEmpty else {
+            return false
+        }
+
+        let clickedOffset = Self.scalarOffset(for: position, in: snapshot.text)
+        guard selectedRange.contains(clickedOffset) else {
+            return false
+        }
+
+        transientSelectionDrag = EditorTransientSelectionDrag(
+            sourceRange: selectedRange,
+            selectedText: selectedText,
+            dropPosition: position,
+            hasMoved: false,
+            copies: copies
+        )
+        return true
+    }
+
+    private func finishTransientSelectionDrag(_ selectionDrag: EditorTransientSelectionDrag) throws {
+        let sourceRange = selectionDrag.sourceRange
+        let selectedScalarCount = selectionDrag.selectedText.unicodeScalars.count
+        guard selectedScalarCount > 0 else { return }
+
+        let originalText = snapshot.text
+        let originalScalarCount = originalText.unicodeScalars.count
+        let dropOffset = Self.scalarOffset(for: selectionDrag.dropPosition, in: originalText)
+
+        let insertionOffset: Int
+        let newText: String
+        if selectionDrag.copies {
+            insertionOffset = Self.clamped(dropOffset, lowerBound: 0, upperBound: originalScalarCount)
+            newText = Self.replacingUnicodeScalars(
+                in: originalText,
+                range: insertionOffset..<insertionOffset,
+                with: selectionDrag.selectedText
+            )
+        } else {
+            guard dropOffset < sourceRange.lowerBound || dropOffset > sourceRange.upperBound else {
+                transientSelectionDrag = nil
+                return
+            }
+
+            let withoutSelection = Self.replacingUnicodeScalars(
+                in: originalText,
+                range: sourceRange,
+                with: ""
+            )
+            insertionOffset = dropOffset > sourceRange.upperBound
+                ? dropOffset - (sourceRange.upperBound - sourceRange.lowerBound)
+                : dropOffset
+            newText = Self.replacingUnicodeScalars(
+                in: withoutSelection,
+                range: insertionOffset..<insertionOffset,
+                with: selectionDrag.selectedText
+            )
+        }
+
+        try editor.setText(text: newText)
+        let anchor = Self.position(forScalarOffset: insertionOffset, in: newText)
+        let cursor = Self.position(forScalarOffset: insertionOffset + selectedScalarCount, in: newText)
+        transientSelection = EditorTransientSelection(
+            anchor: anchor,
+            cursor: cursor,
+            mode: .character,
+            usesInsertionEndpoints: true
+        )
+        _ = try editor.setCursor(row: cursor.row, column: cursor.column)
+        clearEditorError(source: .operation)
+        refreshSnapshot()
+        scheduleAutosaveIfNeeded()
     }
 
     private func copySelection() -> Bool {
@@ -2077,6 +2185,14 @@ private struct EditorTransientSelection {
     let cursor: VikerPosition
     let mode: VikerSelectionMode
     let usesInsertionEndpoints: Bool
+}
+
+private struct EditorTransientSelectionDrag {
+    let sourceRange: Range<Int>
+    let selectedText: String
+    var dropPosition: VikerPosition
+    var hasMoved: Bool
+    var copies: Bool
 }
 
 private struct EditorRenderSelection {
