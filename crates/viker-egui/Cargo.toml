@@ -1,0 +1,32 @@
+[package]
+name = "viker-egui"
+description = "egui frontend and embeddable egui editor widget for Viker."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+ropey.workspace = true
+viker-core = { path = "../viker-core" }
+viker-vim = { path = "../viker-vim" }
+serde_json.workspace = true
+tokio.workspace = true
+unicode-width.workspace = true
+
+[lib]
+name = "viker_egui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "viker-gui"
+path = "src/main.rs"
+
+[[example]]
+name = "embedded_markdown"
+path = "examples/embedded_markdown.rs"

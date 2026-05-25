@@ -1,0 +1,5 @@
+[bindings.swift]
+module_name = "VikerKit"
+ffi_module_name = "VikerKitFFI"
+ffi_module_filename = "VikerKitFFI"
+generate_immutable_records = true
