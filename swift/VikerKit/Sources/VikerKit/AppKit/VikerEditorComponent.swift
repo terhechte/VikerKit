@@ -1,30 +1,90 @@
+#if os(macOS)
 import AppKit
-import VikerKit
+
+public struct VikerEditorToolbarItems: OptionSet {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    public static let save = VikerEditorToolbarItems(rawValue: 1 << 0)
+    public static let workspaceSymbols = VikerEditorToolbarItems(rawValue: 1 << 1)
+    public static let lsp = VikerEditorToolbarItems(rawValue: 1 << 2)
+    public static let mode = VikerEditorToolbarItems(rawValue: 1 << 3)
+    public static let path = VikerEditorToolbarItems(rawValue: 1 << 4)
+    public static let all: VikerEditorToolbarItems = [.save, .workspaceSymbols, .lsp, .mode, .path]
+}
+
+public enum VikerEditorInitialMode {
+    case normal
+    case insert
+}
+
+public struct VikerEditorConfiguration {
+    public var colorScheme: VikerEditorColorScheme
+    public var showsStatusBar: Bool
+    public var toolbarItems: VikerEditorToolbarItems
+    public var loadsLSPs: Bool
+    public var initialMode: VikerEditorInitialMode
+    public var disablesNormalMode: Bool
+    public var showsLineNumbers: Bool
+    public var autosaves: Bool
+    public var autosaveDelay: TimeInterval
+    public var forcedSyntaxLanguage: VikerSyntaxLanguage?
+    public var workspaceRootURL: URL?
+
+    public init(
+        colorScheme: VikerEditorColorScheme = .dark,
+        showsStatusBar: Bool = true,
+        toolbarItems: VikerEditorToolbarItems = .all,
+        loadsLSPs: Bool = true,
+        initialMode: VikerEditorInitialMode = .normal,
+        disablesNormalMode: Bool = false,
+        showsLineNumbers: Bool = true,
+        autosaves: Bool = false,
+        autosaveDelay: TimeInterval = 0.7,
+        forcedSyntaxLanguage: VikerSyntaxLanguage? = nil,
+        workspaceRootURL: URL? = nil
+    ) {
+        self.colorScheme = colorScheme
+        self.showsStatusBar = showsStatusBar
+        self.toolbarItems = toolbarItems
+        self.loadsLSPs = loadsLSPs
+        self.initialMode = initialMode
+        self.disablesNormalMode = disablesNormalMode
+        self.showsLineNumbers = showsLineNumbers
+        self.autosaves = autosaves
+        self.autosaveDelay = autosaveDelay
+        self.forcedSyntaxLanguage = forcedSyntaxLanguage
+        self.workspaceRootURL = workspaceRootURL?.standardizedFileURL
+    }
+}
 
 @MainActor
-final class VikerExampleEditorContent: NSObject {
+public final class VikerEditorComponent: NSObject {
     private static let maximumTextHistoryEntries = 200
 
     private let containerView = NSView()
-    private let toolbar = VikerExampleToolbarView()
+    private let toolbar = VikerEditorToolbarView()
     private let saveButton = NSButton()
     private let symbolsButton = NSButton()
     private let lspButton = NSButton()
-    private let modeLabel = NSTextField.exampleLabel("", style: .monospaceCaptionSemibold)
-    private let pathLabel = NSTextField.exampleLabel("", style: .captionMedium, color: .secondaryLabelColor)
-    private let statusLabel = NSTextField.exampleLabel("", style: .caption, color: .secondaryLabelColor)
+    private let modeLabel = NSTextField.vikerEditorLabel("", style: .monospaceCaptionSemibold)
+    private let pathLabel = NSTextField.vikerEditorLabel("", style: .captionMedium, color: .secondaryLabelColor)
+    private let statusLabel = NSTextField.vikerEditorLabel("", style: .caption, color: .secondaryLabelColor)
     private let scrollView = NSScrollView()
     private let editorView: VikerEditorCanvasView
     private let footerStack = NSStackView()
     private let commandLineView = NSView()
-    private let commandLineLabel = NSTextField.exampleLabel("", style: .monospaceCaption, color: .secondaryLabelColor)
+    private let commandLineLabel = NSTextField.vikerEditorLabel("", style: .monospaceCaption, color: .secondaryLabelColor)
     private let errorBar = NSView()
-    private let errorLabel = NSTextField.exampleLabel("", style: .caption, color: .systemRed)
+    private let errorLabel = NSTextField.vikerEditorLabel("", style: .caption, color: .systemRed)
     private let copyErrorButton = NSButton()
 
     private let editor: VikerEditor
     private var snapshot: VikerSnapshot
-    private var lspSession: VikerExampleLspWorkspaceSession?
+    private var lspSession: VikerEditorLspWorkspaceSession?
     private var lspDocument: VikerLspDocument?
     private var lspServerStatus: VikerLspServerStatus?
     private var lspDiagnostics: [VikerDiagnostic] = []
@@ -45,6 +105,7 @@ final class VikerExampleEditorContent: NSObject {
     private var transientSelectionDrag: EditorTransientSelectionDrag?
     private var editorUndoStack: [EditorTextHistoryEntry] = []
     private var editorRedoStack: [EditorTextHistoryEntry] = []
+    private let configuration: VikerEditorConfiguration
     private let showsToolbar: Bool
     private let autosaves: Bool
     private let autosaveDelay: TimeInterval
@@ -52,25 +113,35 @@ final class VikerExampleEditorContent: NSObject {
     private var pendingAutosaveRequestID: UInt64?
     private var themeObserverToken: NSObjectProtocol?
 
-    private(set) var title: String
-    var onTitleChange: ((String) -> Void)?
-    var onBecomeActive: (() -> Void)?
-    var onOpenFile: ((URL) -> Void)?
-    var onOpenLocation: ((VikerExampleEditorLocation) -> Void)?
-    var onFileURLChange: ((URL) -> Void)?
-    var currentDocumentURL: URL? { currentFileURL }
+    public private(set) var title: String
+    public var onTitleChange: ((String) -> Void)?
+    public var onBecomeActive: (() -> Void)?
+    public var onOpenFile: ((URL) -> Void)?
+    public var onOpenLocation: ((VikerEditorLocation) -> Void)?
+    public var onFileURLChange: ((URL) -> Void)?
+    public var currentDocumentURL: URL? { currentFileURL }
+    public var vikerEditor: VikerEditor { editor }
 
-    init(
+    public convenience init(
         url: URL,
-        showsToolbar: Bool = true,
-        autosaves: Bool = false,
-        autosaveDelay: TimeInterval = 0.7,
-        forcedSyntaxLanguage: VikerSyntaxLanguage? = nil
+        configuration: VikerEditorConfiguration = VikerEditorConfiguration()
     ) throws {
         let standardizedURL = url.standardizedFileURL
         let openedEditor = try VikerEditor.open(path: standardizedURL.path)
-        if let forcedSyntaxLanguage {
+        try self.init(editor: openedEditor, url: standardizedURL, configuration: configuration)
+    }
+
+    public init(
+        editor openedEditor: VikerEditor,
+        url: URL? = nil,
+        configuration: VikerEditorConfiguration = VikerEditorConfiguration()
+    ) throws {
+        VikerEditorThemeManager.shared.colorScheme = configuration.colorScheme
+        if let forcedSyntaxLanguage = configuration.forcedSyntaxLanguage {
             try openedEditor.setLanguage(language: forcedSyntaxLanguage)
+        }
+        if configuration.disablesNormalMode || configuration.initialMode == .insert {
+            _ = try openedEditor.processKey(event: VikerKeyEvent(key: .character, text: "i", ctrl: false, alt: false))
         }
         let initialSnapshot = try openedEditor.snapshot()
         var initialRenderError: String?
@@ -83,12 +154,17 @@ final class VikerExampleEditorContent: NSObject {
 
         self.editor = openedEditor
         self.snapshot = initialSnapshot
-        self.editorView = VikerEditorCanvasView(renderState: initialRenderState)
-        self.currentFileURL = initialSnapshot.filePath.map(Self.fileURL(fromPath:)) ?? standardizedURL
-        self.title = Self.title(from: initialSnapshot, fallbackURL: standardizedURL)
-        self.showsToolbar = showsToolbar
-        self.autosaves = autosaves
-        self.autosaveDelay = autosaveDelay
+        self.editorView = VikerEditorCanvasView(
+            renderState: initialRenderState,
+            colorScheme: configuration.colorScheme,
+            showsLineNumbers: configuration.showsLineNumbers
+        )
+        self.currentFileURL = initialSnapshot.filePath.map(Self.fileURL(fromPath:)) ?? url?.standardizedFileURL
+        self.title = Self.title(from: initialSnapshot, fallbackURL: url?.standardizedFileURL)
+        self.configuration = configuration
+        self.showsToolbar = !configuration.toolbarItems.isEmpty
+        self.autosaves = configuration.autosaves
+        self.autosaveDelay = configuration.autosaveDelay
 
         super.init()
 
@@ -96,17 +172,18 @@ final class VikerExampleEditorContent: NSObject {
         wireEditorView()
         applySnapshot(initialSnapshot, notifyTitleChange: false, notifyFileURLChange: false)
         setEditorError(initialRenderError, source: .render)
+        configureLspIfNeeded()
     }
 
-    var view: NSView { containerView }
+    public var view: NSView { containerView }
 
-    var isProcessAlive: Bool { false }
+    public var isProcessAlive: Bool { false }
 
-    func makeFirstResponder() {
+    public func makeFirstResponder() {
         editorView.window?.makeFirstResponder(editorView)
     }
 
-    func viewportDidChange() {
+    public func viewportDidChange() {
         do {
             try updateEditorViewportSize()
             applySnapshot(try editor.snapshot(), notifyTitleChange: false, notifyFileURLChange: false)
@@ -115,19 +192,19 @@ final class VikerExampleEditorContent: NSObject {
         }
     }
 
-    func willClose() {
+    public func willClose() {
         flushPendingAutosave()
         lspSession?.closeDocument(editor: editor, owner: self)
         lspSession = nil
         removeThemeObserver()
     }
 
-    func flushPendingAutosave() {
+    public func flushPendingAutosave() {
         pendingAutosaveRequestID = nil
         autosaveNowIfNeeded()
     }
 
-    func attachLspSession(_ session: VikerExampleLspWorkspaceSession) throws {
+    func attachLspSession(_ session: VikerEditorLspWorkspaceSession) throws {
         if lspSession !== session {
             lspSession?.closeDocument(editor: editor, owner: self)
             lspSession = session
@@ -140,7 +217,24 @@ final class VikerExampleEditorContent: NSObject {
         refreshLspState(message: nil)
     }
 
-    func setWorkspaceRoot(_ rootURL: URL?) {
+    private func configureLspIfNeeded() {
+        guard configuration.loadsLSPs else { return }
+        let rootURL = configuration.workspaceRootURL
+            ?? currentFileURL?.deletingLastPathComponent().standardizedFileURL
+        guard let rootURL else { return }
+
+        do {
+            let session = try VikerEditorLspWorkspaceSession(rootURL: rootURL)
+            try attachLspSession(session)
+            if let language = try editor.syntaxLanguage() {
+                startLsp(language: language)
+            }
+        } catch {
+            presentLspUnavailable(error)
+        }
+    }
+
+    public func setWorkspaceRoot(_ rootURL: URL?) {
         workspaceRootURL = rootURL?.standardizedFileURL
         updatePathLabel()
     }
@@ -154,7 +248,7 @@ final class VikerExampleEditorContent: NSObject {
         updateStatusLabel()
     }
 
-    func jumpTo(row: UInt64, column: UInt64) {
+    public func jumpTo(row: UInt64, column: UInt64) {
         do {
             statusOverride = nil
             _ = try editor.setCursor(row: row, column: column)
@@ -171,37 +265,43 @@ final class VikerExampleEditorContent: NSObject {
 
         saveButton.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: "Save")
         saveButton.imagePosition = .imageOnly
-        saveButton.applyExampleButtonStyle(.toolbar)
+        saveButton.applyVikerEditorButtonStyle(.toolbar)
         saveButton.target = self
         saveButton.action = #selector(saveDocument)
         saveButton.toolTip = "Save"
+        saveButton.isHidden = !configuration.toolbarItems.contains(.save)
 
         symbolsButton.image = NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: "Workspace Symbols")
         symbolsButton.imagePosition = .imageOnly
-        symbolsButton.applyExampleButtonStyle(.toolbar)
+        symbolsButton.applyVikerEditorButtonStyle(.toolbar)
         symbolsButton.target = self
         symbolsButton.action = #selector(showWorkspaceSymbols)
         symbolsButton.toolTip = "Workspace Symbols"
+        symbolsButton.isHidden = !configuration.toolbarItems.contains(.workspaceSymbols)
 
         lspButton.title = "LSP"
-        lspButton.applyExampleButtonStyle(.toolbarCompact)
+        lspButton.applyVikerEditorButtonStyle(.toolbarCompact)
         lspButton.target = self
         lspButton.action = #selector(showLspMenu)
         lspButton.toolTip = "LSP Off"
+        lspButton.isHidden = !configuration.toolbarItems.contains(.lsp)
 
         modeLabel.alignment = .center
-        modeLabel.applyExampleLayer(
+        modeLabel.applyVikerEditorLayer(
             backgroundColor: NSColor.controlAccentColor.withAlphaComponent(0.16),
-            cornerRadius: VikerExampleDesign.Radius.control
+            cornerRadius: VikerEditorDesign.Radius.control
         )
         modeLabel.translatesAutoresizingMaskIntoConstraints = false
+        modeLabel.isHidden = !configuration.toolbarItems.contains(.mode)
 
         pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.translatesAutoresizingMaskIntoConstraints = false
+        pathLabel.isHidden = !configuration.toolbarItems.contains(.path)
 
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.alignment = .right
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.isHidden = !configuration.showsStatusBar
 
         commandLineView.wantsLayer = true
         commandLineView.isHidden = true
@@ -220,7 +320,7 @@ final class VikerExampleEditorContent: NSObject {
 
         copyErrorButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy Error")
         copyErrorButton.imagePosition = .imageOnly
-        copyErrorButton.applyExampleButtonStyle(.toolbar)
+        copyErrorButton.applyVikerEditorButtonStyle(.toolbar)
         copyErrorButton.target = self
         copyErrorButton.action = #selector(copyEditorError)
         copyErrorButton.toolTip = "Copy error"
@@ -270,7 +370,7 @@ final class VikerExampleEditorContent: NSObject {
             errorLabel.centerYAnchor.constraint(equalTo: errorBar.centerYAnchor),
             copyErrorButton.trailingAnchor.constraint(equalTo: errorBar.trailingAnchor, constant: -8),
             copyErrorButton.centerYAnchor.constraint(equalTo: errorBar.centerYAnchor),
-            copyErrorButton.widthAnchor.constraint(equalToConstant: VikerExampleDesign.Size.toolbarButtonWidth),
+            copyErrorButton.widthAnchor.constraint(equalToConstant: VikerEditorDesign.Size.toolbarButtonWidth),
             copyErrorButton.heightAnchor.constraint(equalToConstant: 22),
         ]
 
@@ -292,15 +392,15 @@ final class VikerExampleEditorContent: NSObject {
                 toolbar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
                 toolbar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
                 toolbar.topAnchor.constraint(equalTo: containerView.topAnchor),
-                toolbar.heightAnchor.constraint(equalToConstant: VikerExampleDesign.Size.toolbarHeight),
+                toolbar.heightAnchor.constraint(equalToConstant: VikerEditorDesign.Size.toolbarHeight),
 
                 toolStack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 8),
                 toolStack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -8),
                 toolStack.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
 
-                saveButton.widthAnchor.constraint(equalToConstant: VikerExampleDesign.Size.toolbarButtonWidth),
+                saveButton.widthAnchor.constraint(equalToConstant: VikerEditorDesign.Size.toolbarButtonWidth),
                 saveButton.heightAnchor.constraint(equalToConstant: 22),
-                symbolsButton.widthAnchor.constraint(equalToConstant: VikerExampleDesign.Size.toolbarButtonWidth),
+                symbolsButton.widthAnchor.constraint(equalToConstant: VikerEditorDesign.Size.toolbarButtonWidth),
                 symbolsButton.heightAnchor.constraint(equalToConstant: 22),
                 lspButton.widthAnchor.constraint(equalToConstant: 40),
                 lspButton.heightAnchor.constraint(equalToConstant: 22),
@@ -378,6 +478,22 @@ final class VikerExampleEditorContent: NSObject {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        if configuration.disablesNormalMode, event.keyCode == 53 {
+            transientSelection = nil
+            clearEditorError(source: .operation)
+            refreshSnapshot(syncLsp: false)
+            return true
+        }
+
+        if configuration.disablesNormalMode, !Self.isTextSelectionMode(snapshot.mode) {
+            do {
+                try enterInsertModeIfNeeded()
+                refreshSnapshot(syncLsp: false)
+            } catch {
+                present(error)
+            }
+        }
+
         if handleInsertEditingShortcut(event) {
             return true
         }
@@ -404,7 +520,8 @@ final class VikerExampleEditorContent: NSObject {
                 return true
             }
 
-            let effects = try editor.processKey(event: keyEvent)
+            var effects = try editor.processKey(event: keyEvent)
+            effects += try enterInsertModeIfNeeded()
             try recordTextHistory(before: historyBefore)
             applyEffects(effects)
             clearEditorError(source: .operation)
@@ -414,6 +531,16 @@ final class VikerExampleEditorContent: NSObject {
             present(error)
         }
         return true
+    }
+
+    @discardableResult
+    private func enterInsertModeIfNeeded() throws -> [VikerEffect] {
+        guard configuration.disablesNormalMode,
+              !Self.isTextSelectionMode(try editor.mode()) else {
+            return []
+        }
+
+        return try editor.processKey(event: VikerKeyEvent(key: .character, text: "i", ctrl: false, alt: false))
     }
 
     private func paste(_ text: String) {
@@ -1325,7 +1452,7 @@ final class VikerExampleEditorContent: NSObject {
         }
     }
 
-    func save() {
+    public func save() {
         saveDocument()
     }
 
@@ -1507,7 +1634,7 @@ final class VikerExampleEditorContent: NSObject {
         }
     }
 
-    func handleLspWorkspaceEvent(_ event: VikerLspWorkspaceEvent, session: VikerExampleLspWorkspaceSession) {
+    func handleLspWorkspaceEvent(_ event: VikerLspWorkspaceEvent, session: VikerEditorLspWorkspaceSession) {
         guard lspSession === session else { return }
 
         switch event.kind {
@@ -1938,7 +2065,7 @@ final class VikerExampleEditorContent: NSObject {
         if target.url.standardizedFileURL == currentFileURL?.standardizedFileURL {
             jumpTo(row: target.row, column: target.column)
         } else {
-            onOpenLocation?(VikerExampleEditorLocation(url: target.url, row: target.row, column: target.column))
+            onOpenLocation?(VikerEditorLocation(url: target.url, row: target.row, column: target.column))
         }
     }
 
@@ -1980,7 +2107,7 @@ final class VikerExampleEditorContent: NSObject {
     private func installThemeObserver() {
         guard themeObserverToken == nil else { return }
         themeObserverToken = NotificationCenter.default.addObserver(
-            forName: VikerExampleThemeManager.didChange,
+            forName: VikerEditorThemeManager.didChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -1998,25 +2125,27 @@ final class VikerExampleEditorContent: NSObject {
     }
 
     private func applyTheme(refreshSnapshot shouldRefreshSnapshot: Bool) {
-        containerView.layer?.backgroundColor = VikerExampleDesign.Color.editorBackground.cgColor
-        toolbar.applyTheme()
-        pathLabel.textColor = VikerExampleDesign.Color.editorToolbarText
-        statusLabel.textColor = VikerExampleDesign.Color.editorToolbarText
-        commandLineView.layer?.backgroundColor = VikerExampleDesign.Color.editorCommandLineBackground.cgColor
-        commandLineLabel.textColor = VikerExampleDesign.Color.editorToolbarText
-        errorBar.layer?.backgroundColor = VikerExampleDesign.Color.editorErrorBackground.cgColor
-        errorLabel.textColor = VikerExampleDesign.Color.editorErrorForeground
-        modeLabel.textColor = VikerExampleDesign.Color.editorModeText
-        modeLabel.applyExampleLayer(
-            backgroundColor: VikerExampleDesign.Color.editorModeBackground,
-            cornerRadius: VikerExampleDesign.Radius.control
+        let colorScheme = configuration.colorScheme
+        VikerEditorThemeManager.shared.colorScheme = colorScheme
+        containerView.layer?.backgroundColor = colorScheme.editorBackground.cgColor
+        toolbar.applyTheme(colorScheme: colorScheme)
+        pathLabel.textColor = colorScheme.toolbarText
+        statusLabel.textColor = colorScheme.toolbarText
+        commandLineView.layer?.backgroundColor = colorScheme.commandLineBackground.cgColor
+        commandLineLabel.textColor = colorScheme.toolbarText
+        errorBar.layer?.backgroundColor = colorScheme.errorBackground.cgColor
+        errorLabel.textColor = colorScheme.errorForeground
+        modeLabel.textColor = colorScheme.modeText
+        modeLabel.applyVikerEditorLayer(
+            backgroundColor: colorScheme.modeBackground,
+            cornerRadius: VikerEditorDesign.Radius.control
         )
         updateSaveButtonTint()
 
-        editorView.applyTheme(viewportWidth: scrollView.contentView.bounds.width)
+        editorView.applyTheme(colorScheme: colorScheme, viewportWidth: scrollView.contentView.bounds.width)
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = VikerExampleDesign.Color.editorBackground
-        scrollView.contentView.backgroundColor = VikerExampleDesign.Color.editorBackground
+        scrollView.backgroundColor = colorScheme.editorBackground
+        scrollView.contentView.backgroundColor = colorScheme.editorBackground
         scrollView.needsDisplay = true
 
         if shouldRefreshSnapshot {
@@ -2025,9 +2154,10 @@ final class VikerExampleEditorContent: NSObject {
     }
 
     private func updateSaveButtonTint() {
+        let colorScheme = configuration.colorScheme
         saveButton.contentTintColor = snapshot.modified
-            ? VikerExampleDesign.Color.editorCursor
-            : VikerExampleDesign.Color.editorToolbarText
+            ? colorScheme.cursor
+            : colorScheme.toolbarText
     }
 
     private func updateEditorViewportSize() throws {
@@ -2398,10 +2528,10 @@ private enum EditorErrorSource: Hashable {
 }
 
 @MainActor
-final class VikerExampleEditorErrorContent {
+final class VikerEditorErrorContent {
     private let containerView = NSView()
-    private let titleLabel = NSTextField.exampleLabel("Editor unavailable", style: .titleSmall)
-    private let detailLabel = NSTextField.exampleLabel("", style: .caption, color: .secondaryLabelColor)
+    private let titleLabel = NSTextField.vikerEditorLabel("Editor unavailable", style: .titleSmall)
+    private let detailLabel = NSTextField.vikerEditorLabel("", style: .caption, color: .secondaryLabelColor)
 
     let title: String
     var onTitleChange: ((String) -> Void)?
@@ -2424,13 +2554,13 @@ final class VikerExampleEditorErrorContent {
 
     private func setupViews() {
         containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = VikerExampleDesign.Color.editorBackground.cgColor
+        containerView.layer?.backgroundColor = VikerEditorDesign.Color.editorBackground.cgColor
 
         titleLabel.alignment = .center
-        titleLabel.textColor = VikerExampleDesign.Color.editorForeground
+        titleLabel.textColor = VikerEditorDesign.Color.editorForeground
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         detailLabel.alignment = .center
-        detailLabel.textColor = VikerExampleDesign.Color.editorToolbarText
+        detailLabel.textColor = VikerEditorDesign.Color.editorToolbarText
         detailLabel.maximumNumberOfLines = 4
         detailLabel.lineBreakMode = .byWordWrapping
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -2564,6 +2694,8 @@ private final class VikerEditorCanvasView: NSView {
     var onMouseUp: (() -> Void)?
 
     private var renderState: EditorRenderState
+    private var colorScheme: VikerEditorColorScheme
+    private let showsLineNumbers: Bool
 
     private var font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     private var lineNumberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -2576,16 +2708,18 @@ private final class VikerEditorCanvasView: NSView {
         ceil(font.ascender - font.descender + font.leading + 4)
     }
 
-    private let gutterWidth: CGFloat = 54
+    private var gutterWidth: CGFloat { showsLineNumbers ? 54 : 0 }
     private let textInsetX: CGFloat = 10
     private let verticalInset: CGFloat = 8
 
-    init(renderState: EditorRenderState) {
+    init(renderState: EditorRenderState, colorScheme: VikerEditorColorScheme, showsLineNumbers: Bool) {
         self.renderState = renderState
+        self.colorScheme = colorScheme
+        self.showsLineNumbers = showsLineNumbers
         super.init(frame: .zero)
         wantsLayer = true
         refreshThemeMetrics()
-        layer?.backgroundColor = VikerExampleDesign.Color.editorBackground.cgColor
+        layer?.backgroundColor = colorScheme.editorBackground.cgColor
     }
 
     required init?(coder: NSCoder) {
@@ -2602,9 +2736,10 @@ private final class VikerEditorCanvasView: NSView {
         scrollCursorToVisible()
     }
 
-    func applyTheme(viewportWidth: CGFloat) {
+    func applyTheme(colorScheme: VikerEditorColorScheme, viewportWidth: CGFloat) {
+        self.colorScheme = colorScheme
         refreshThemeMetrics()
-        layer?.backgroundColor = VikerExampleDesign.Color.editorBackground.cgColor
+        layer?.backgroundColor = colorScheme.editorBackground.cgColor
         updateDocumentSize(viewportWidth: viewportWidth)
         needsDisplay = true
     }
@@ -2626,7 +2761,7 @@ private final class VikerEditorCanvasView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        VikerExampleDesign.Color.editorBackground.setFill()
+        colorScheme.editorBackground.setFill()
         dirtyRect.fill()
 
         drawGutter(in: dirtyRect)
@@ -2723,8 +2858,9 @@ private final class VikerEditorCanvasView: NSView {
     }
 
     private func drawGutter(in dirtyRect: NSRect) {
+        guard showsLineNumbers else { return }
         let gutterRect = NSRect(x: 0, y: dirtyRect.minY, width: gutterWidth, height: dirtyRect.height)
-        VikerExampleDesign.Color.editorGutterBackground.setFill()
+        colorScheme.gutterBackground.setFill()
         gutterRect.fill()
     }
 
@@ -2734,12 +2870,14 @@ private final class VikerEditorCanvasView: NSView {
 
         for index in range {
             let rowY = verticalInset + CGFloat(index) * lineHeight
-            let lineNumber = "\(index + 1)" as NSString
-            let numberSize = lineNumber.size(withAttributes: lineNumberAttributes)
-            lineNumber.draw(
-                at: NSPoint(x: gutterWidth - numberSize.width - 8, y: rowY + 2),
-                withAttributes: lineNumberAttributes
-            )
+            if showsLineNumbers {
+                let lineNumber = "\(index + 1)" as NSString
+                let numberSize = lineNumber.size(withAttributes: lineNumberAttributes)
+                lineNumber.draw(
+                    at: NSPoint(x: gutterWidth - numberSize.width - 8, y: rowY + 2),
+                    withAttributes: lineNumberAttributes
+                )
+            }
 
             drawLine(renderState.displayCells(row: index), row: index, y: rowY + 2)
         }
@@ -2754,7 +2892,7 @@ private final class VikerEditorCanvasView: NSView {
         } ?? Self.clamped(Self.intClamped(renderState.snapshot.cursor.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
         guard range.contains(activeRow) else { return }
 
-        VikerExampleDesign.Color.editorActiveLineBackground.setFill()
+        colorScheme.activeLineBackground.setFill()
         let rowY = verticalInset + CGFloat(activeRow) * lineHeight
         NSRect(x: gutterWidth, y: rowY, width: bounds.width - gutterWidth, height: lineHeight).fill()
     }
@@ -2780,7 +2918,7 @@ private final class VikerEditorCanvasView: NSView {
         let startRow = Self.clamped(Self.intClamped(start.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
         let endRow = Self.clamped(Self.intClamped(end.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
 
-        VikerExampleDesign.Color.editorSelectionBackground.setFill()
+        colorScheme.selectionBackground.setFill()
         for row in visible where row >= startRow && row <= endRow {
             let y = verticalInset + CGFloat(row) * lineHeight
             if selection.usesInsertionEndpoints, selection.mode == .character {
@@ -2815,7 +2953,7 @@ private final class VikerEditorCanvasView: NSView {
         let x = textOriginX + CGFloat(column) * charWidth
         let width: CGFloat = renderState.snapshot.mode == .insert ? 1.5 : max(2, charWidth)
 
-        VikerExampleDesign.Color.editorCursor.setFill()
+        colorScheme.cursor.setFill()
         NSRect(x: x, y: y + 2, width: width, height: lineHeight - 4).fill()
     }
 
@@ -3120,15 +3258,15 @@ private final class VikerEditorCanvasView: NSView {
     }
 
     private func refreshThemeMetrics() {
-        font = .monospacedSystemFont(ofSize: VikerExampleDesign.Typography.monospaceBody, weight: .regular)
-        lineNumberFont = .monospacedDigitSystemFont(ofSize: VikerExampleDesign.Typography.monospaceSmall, weight: .regular)
+        font = .monospacedSystemFont(ofSize: VikerEditorDesign.Typography.monospaceBody, weight: .regular)
+        lineNumberFont = .monospacedDigitSystemFont(ofSize: VikerEditorDesign.Typography.monospaceSmall, weight: .regular)
         textAttributes = [
             .font: font,
-            .foregroundColor: VikerExampleDesign.Color.editorForeground,
+            .foregroundColor: colorScheme.editorForeground,
         ]
         lineNumberAttributes = [
             .font: lineNumberFont,
-            .foregroundColor: VikerExampleDesign.Color.editorLineNumber,
+            .foregroundColor: colorScheme.lineNumber,
         ]
         italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
         charWidth = (" " as NSString).size(withAttributes: [.font: font]).width
@@ -3146,71 +3284,79 @@ private final class VikerEditorCanvasView: NSView {
 
     private func syntaxColor(for token: VikerSyntaxToken) -> NSColor {
         let theme = Self.syntaxTheme(for: token)
-        return VikerExampleThemeManager.shared.color(id: theme.id, default: theme.defaultColor)
+        if let color = colorScheme.syntaxColors[theme.id] {
+            return color
+        }
+        switch token {
+        case .text, .unknown:
+            return colorScheme.editorForeground
+        default:
+            return theme.defaultColor
+        }
     }
 
     private static func syntaxTheme(for token: VikerSyntaxToken) -> (id: String, defaultColor: NSColor) {
         switch token {
         case .text:
-            return ("color.editorSyntaxText", VikerExampleThemeDefaults.Color.editorSyntaxText)
+            return ("color.editorSyntaxText", VikerEditorThemeDefaults.Color.editorSyntaxText)
         case .keyword:
-            return ("color.editorSyntaxKeyword", VikerExampleThemeDefaults.Color.editorSyntaxKeyword)
+            return ("color.editorSyntaxKeyword", VikerEditorThemeDefaults.Color.editorSyntaxKeyword)
         case .typeName:
-            return ("color.editorSyntaxTypeName", VikerExampleThemeDefaults.Color.editorSyntaxTypeName)
+            return ("color.editorSyntaxTypeName", VikerEditorThemeDefaults.Color.editorSyntaxTypeName)
         case .tag:
-            return ("color.editorSyntaxTag", VikerExampleThemeDefaults.Color.editorSyntaxTag)
+            return ("color.editorSyntaxTag", VikerEditorThemeDefaults.Color.editorSyntaxTag)
         case .attribute:
-            return ("color.editorSyntaxAttribute", VikerExampleThemeDefaults.Color.editorSyntaxAttribute)
+            return ("color.editorSyntaxAttribute", VikerEditorThemeDefaults.Color.editorSyntaxAttribute)
         case .constructor:
-            return ("color.editorSyntaxConstructor", VikerExampleThemeDefaults.Color.editorSyntaxConstructor)
+            return ("color.editorSyntaxConstructor", VikerEditorThemeDefaults.Color.editorSyntaxConstructor)
         case .function:
-            return ("color.editorSyntaxFunction", VikerExampleThemeDefaults.Color.editorSyntaxFunction)
+            return ("color.editorSyntaxFunction", VikerEditorThemeDefaults.Color.editorSyntaxFunction)
         case .method:
-            return ("color.editorSyntaxMethod", VikerExampleThemeDefaults.Color.editorSyntaxMethod)
+            return ("color.editorSyntaxMethod", VikerEditorThemeDefaults.Color.editorSyntaxMethod)
         case .macro:
-            return ("color.editorSyntaxMacro", VikerExampleThemeDefaults.Color.editorSyntaxMacro)
+            return ("color.editorSyntaxMacro", VikerEditorThemeDefaults.Color.editorSyntaxMacro)
         case .stringLiteral:
-            return ("color.editorSyntaxString", VikerExampleThemeDefaults.Color.editorSyntaxString)
+            return ("color.editorSyntaxString", VikerEditorThemeDefaults.Color.editorSyntaxString)
         case .escape:
-            return ("color.editorSyntaxEscape", VikerExampleThemeDefaults.Color.editorSyntaxEscape)
+            return ("color.editorSyntaxEscape", VikerEditorThemeDefaults.Color.editorSyntaxEscape)
         case .character:
-            return ("color.editorSyntaxCharacter", VikerExampleThemeDefaults.Color.editorSyntaxCharacter)
+            return ("color.editorSyntaxCharacter", VikerEditorThemeDefaults.Color.editorSyntaxCharacter)
         case .numberLiteral:
-            return ("color.editorSyntaxNumber", VikerExampleThemeDefaults.Color.editorSyntaxNumber)
+            return ("color.editorSyntaxNumber", VikerEditorThemeDefaults.Color.editorSyntaxNumber)
         case .booleanLiteral:
-            return ("color.editorSyntaxBoolean", VikerExampleThemeDefaults.Color.editorSyntaxBoolean)
+            return ("color.editorSyntaxBoolean", VikerEditorThemeDefaults.Color.editorSyntaxBoolean)
         case .constant:
-            return ("color.editorSyntaxConstant", VikerExampleThemeDefaults.Color.editorSyntaxConstant)
+            return ("color.editorSyntaxConstant", VikerEditorThemeDefaults.Color.editorSyntaxConstant)
         case .comment:
-            return ("color.editorSyntaxComment", VikerExampleThemeDefaults.Color.editorSyntaxComment)
+            return ("color.editorSyntaxComment", VikerEditorThemeDefaults.Color.editorSyntaxComment)
         case .variable:
-            return ("color.editorSyntaxVariable", VikerExampleThemeDefaults.Color.editorSyntaxVariable)
+            return ("color.editorSyntaxVariable", VikerEditorThemeDefaults.Color.editorSyntaxVariable)
         case .parameter:
-            return ("color.editorSyntaxParameter", VikerExampleThemeDefaults.Color.editorSyntaxParameter)
+            return ("color.editorSyntaxParameter", VikerEditorThemeDefaults.Color.editorSyntaxParameter)
         case .property:
-            return ("color.editorSyntaxProperty", VikerExampleThemeDefaults.Color.editorSyntaxProperty)
+            return ("color.editorSyntaxProperty", VikerEditorThemeDefaults.Color.editorSyntaxProperty)
         case .module:
-            return ("color.editorSyntaxModule", VikerExampleThemeDefaults.Color.editorSyntaxModule)
+            return ("color.editorSyntaxModule", VikerEditorThemeDefaults.Color.editorSyntaxModule)
         case .label:
-            return ("color.editorSyntaxLabel", VikerExampleThemeDefaults.Color.editorSyntaxLabel)
+            return ("color.editorSyntaxLabel", VikerEditorThemeDefaults.Color.editorSyntaxLabel)
         case .punctuation:
-            return ("color.editorSyntaxPunctuation", VikerExampleThemeDefaults.Color.editorSyntaxPunctuation)
+            return ("color.editorSyntaxPunctuation", VikerEditorThemeDefaults.Color.editorSyntaxPunctuation)
         case .operatorToken:
-            return ("color.editorSyntaxOperator", VikerExampleThemeDefaults.Color.editorSyntaxOperator)
+            return ("color.editorSyntaxOperator", VikerEditorThemeDefaults.Color.editorSyntaxOperator)
         case .heading:
-            return ("color.editorSyntaxHeading", VikerExampleThemeDefaults.Color.editorSyntaxHeading)
+            return ("color.editorSyntaxHeading", VikerEditorThemeDefaults.Color.editorSyntaxHeading)
         case .rawText:
-            return ("color.editorSyntaxRawText", VikerExampleThemeDefaults.Color.editorSyntaxRawText)
+            return ("color.editorSyntaxRawText", VikerEditorThemeDefaults.Color.editorSyntaxRawText)
         case .link:
-            return ("color.editorSyntaxLink", VikerExampleThemeDefaults.Color.editorSyntaxLink)
+            return ("color.editorSyntaxLink", VikerEditorThemeDefaults.Color.editorSyntaxLink)
         case .linkUrl:
-            return ("color.editorSyntaxLinkUrl", VikerExampleThemeDefaults.Color.editorSyntaxLinkUrl)
+            return ("color.editorSyntaxLinkUrl", VikerEditorThemeDefaults.Color.editorSyntaxLinkUrl)
         case .emphasis:
-            return ("color.editorSyntaxEmphasis", VikerExampleThemeDefaults.Color.editorSyntaxEmphasis)
+            return ("color.editorSyntaxEmphasis", VikerEditorThemeDefaults.Color.editorSyntaxEmphasis)
         case .strong:
-            return ("color.editorSyntaxStrong", VikerExampleThemeDefaults.Color.editorSyntaxStrong)
+            return ("color.editorSyntaxStrong", VikerEditorThemeDefaults.Color.editorSyntaxStrong)
         case .unknown:
-            return ("color.editorSyntaxUnknown", VikerExampleThemeDefaults.Color.editorSyntaxUnknown)
+            return ("color.editorSyntaxUnknown", VikerEditorThemeDefaults.Color.editorSyntaxUnknown)
         }
     }
 
@@ -3231,20 +3377,26 @@ private final class VikerEditorCanvasView: NSView {
     }
 }
 
-struct VikerExampleEditorLocation {
-    let url: URL
-    let row: UInt64
-    let column: UInt64
+public struct VikerEditorLocation {
+    public let url: URL
+    public let row: UInt64
+    public let column: UInt64
+
+    public init(url: URL, row: UInt64, column: UInt64) {
+        self.url = url
+        self.row = row
+        self.column = column
+    }
 }
 
 @MainActor
-final class VikerExampleLspWorkspaceSession: NSObject {
+final class VikerEditorLspWorkspaceSession: NSObject {
     let rootURL: URL
 
     private let workspace: VikerLspWorkspace
     private var documentByEditorID: [ObjectIdentifier: VikerLspDocument] = [:]
-    private var ownerByURI: [String: WeakVikerExampleEditorContent] = [:]
-    private var pendingOwnerByRequestID: [UInt64: WeakVikerExampleEditorContent] = [:]
+    private var ownerByURI: [String: WeakVikerEditorComponent] = [:]
+    private var pendingOwnerByRequestID: [UInt64: WeakVikerEditorComponent] = [:]
     private var pollTimer: Timer?
 
     init(rootURL: URL) throws {
@@ -3253,17 +3405,17 @@ final class VikerExampleLspWorkspaceSession: NSObject {
         super.init()
     }
 
-    func openDocument(editor: VikerEditor, owner: VikerExampleEditorContent) throws {
+    func openDocument(editor: VikerEditor, owner: VikerEditorComponent) throws {
         let document = try workspace.openDocument(editor: editor)
         documentByEditorID[ObjectIdentifier(editor)] = document
-        ownerByURI[document.uri] = WeakVikerExampleEditorContent(owner)
+        ownerByURI[document.uri] = WeakVikerEditorComponent(owner)
         if isLanguageRunning(document.language) {
             ensurePolling()
             pollSoon()
         }
     }
 
-    func closeDocument(editor: VikerEditor, owner: VikerExampleEditorContent) {
+    func closeDocument(editor: VikerEditor, owner: VikerEditorComponent) {
         let editorID = ObjectIdentifier(editor)
         guard let document = documentByEditorID.removeValue(forKey: editorID) else { return }
         ownerByURI.removeValue(forKey: document.uri)
@@ -3275,7 +3427,7 @@ final class VikerExampleLspWorkspaceSession: NSObject {
         }
     }
 
-    func syncDocument(editor: VikerEditor, owner: VikerExampleEditorContent) throws {
+    func syncDocument(editor: VikerEditor, owner: VikerEditorComponent) throws {
         if documentByEditorID[ObjectIdentifier(editor)] == nil {
             try openDocument(editor: editor, owner: owner)
             return
@@ -3283,21 +3435,21 @@ final class VikerExampleLspWorkspaceSession: NSObject {
 
         let document = try workspace.syncDocument(editor: editor)
         documentByEditorID[ObjectIdentifier(editor)] = document
-        ownerByURI[document.uri] = WeakVikerExampleEditorContent(owner)
+        ownerByURI[document.uri] = WeakVikerEditorComponent(owner)
         pollSoon()
     }
 
-    func saveDocument(editor: VikerEditor, owner: VikerExampleEditorContent) throws {
+    func saveDocument(editor: VikerEditor, owner: VikerEditorComponent) throws {
         try syncDocument(editor: editor, owner: owner)
         try workspace.saveDocument(editor: editor)
         pollSoon()
     }
 
-    func formatDocumentBeforeSave(editor: VikerEditor, owner: VikerExampleEditorContent) throws -> VikerLspRequest {
+    func formatDocumentBeforeSave(editor: VikerEditor, owner: VikerEditorComponent) throws -> VikerLspRequest {
         try syncDocument(editor: editor, owner: owner)
         let request = try workspace.formatDocument(editor: editor)
         if let requestID = request.id {
-            pendingOwnerByRequestID[requestID] = WeakVikerExampleEditorContent(owner)
+            pendingOwnerByRequestID[requestID] = WeakVikerEditorComponent(owner)
         }
         pollSoon()
         return request
@@ -3306,11 +3458,11 @@ final class VikerExampleLspWorkspaceSession: NSObject {
     func requestWorkspaceSymbols(
         language: VikerSyntaxLanguage,
         query: String,
-        owner: VikerExampleEditorContent
+        owner: VikerEditorComponent
     ) throws -> VikerLspRequest {
         let request = try workspace.requestWorkspaceSymbols(language: language, query: query)
         if let requestID = request.id {
-            pendingOwnerByRequestID[requestID] = WeakVikerExampleEditorContent(owner)
+            pendingOwnerByRequestID[requestID] = WeakVikerEditorComponent(owner)
         }
         ensurePolling()
         pollSoon()
@@ -3325,7 +3477,7 @@ final class VikerExampleLspWorkspaceSession: NSObject {
         try workspace.listLspServers().first { $0.language == language }
     }
 
-    func startLsp(language: VikerSyntaxLanguage, owner: VikerExampleEditorContent) throws -> VikerLspServerStatus {
+    func startLsp(language: VikerSyntaxLanguage, owner: VikerEditorComponent) throws -> VikerLspServerStatus {
         let status = try workspace.startLsp(language: language)
         ensurePolling()
         broadcast(VikerLspWorkspaceEvent(
@@ -3451,9 +3603,9 @@ final class VikerExampleLspWorkspaceSession: NSObject {
         }
     }
 
-    private func liveOwners() -> [VikerExampleEditorContent] {
+    private func liveOwners() -> [VikerEditorComponent] {
         var seen = Set<ObjectIdentifier>()
-        var owners: [VikerExampleEditorContent] = []
+        var owners: [VikerEditorComponent] = []
         for weakOwner in Array(ownerByURI.values) + Array(pendingOwnerByRequestID.values) {
             guard let owner = weakOwner.value else { continue }
             let id = ObjectIdentifier(owner)
@@ -3486,10 +3638,10 @@ fileprivate struct EditorLspState {
     let message: String?
 }
 
-private final class WeakVikerExampleEditorContent {
-    weak var value: VikerExampleEditorContent?
+private final class WeakVikerEditorComponent {
+    weak var value: VikerEditorComponent?
 
-    init(_ value: VikerExampleEditorContent) {
+    init(_ value: VikerEditorComponent) {
         self.value = value
     }
 }
@@ -3515,3 +3667,4 @@ private final class EditorLspMenuPayload: NSObject {
         self.serverInfo = serverInfo
     }
 }
+#endif

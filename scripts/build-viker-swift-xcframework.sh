@@ -99,8 +99,10 @@ cp -R "$DEVICE_HEADERS/." "$MACOS_HEADERS/"
 echo "Creating Swift package layout"
 rm -rf "$PACKAGE_DIR/$FFI_MODULE_NAME.xcframework"
 mkdir -p "$PACKAGE_DIR/Sources/VikerKit"
-find "$PACKAGE_DIR/Sources/VikerKit" -type f -name '*.swift' -delete
-find "$GEN_SWIFT_DIR" -maxdepth 1 -type f -name '*.swift' -exec cp {} "$PACKAGE_DIR/Sources/VikerKit/" \;
+while IFS= read -r -d '' swift_source; do
+  rm -f "$PACKAGE_DIR/Sources/VikerKit/$(basename "$swift_source")"
+  cp "$swift_source" "$PACKAGE_DIR/Sources/VikerKit/"
+done < <(find "$GEN_SWIFT_DIR" -maxdepth 1 -type f -name '*.swift' -print0)
 
 echo "Creating xcframework"
 xcodebuild -create-xcframework \

@@ -1,8 +1,8 @@
 # VikerExample
 
-`VikerExample` is a small macOS editor application that embeds `VikerKit`.
-It is intentionally packaged separately from `VikerKit` so the example only
-depends on the public Swift package API.
+`VikerExample` is a small macOS editor application that embeds the reusable
+`VikerEditorComponent` from `VikerKit`. It is intentionally packaged separately
+from `VikerKit` so the example only depends on the public Swift package API.
 
 ## Requirements
 
@@ -50,3 +50,7 @@ swift run --package-path swift/Example VikerExample /path/to/file.swift
 The example links `VikerKit` through a local package dependency at
 `../VikerKit`. It does not depend directly on the generated FFI binary target
 or declare additional Swift package dependencies.
+
+The editor view is configured with `VikerEditorConfiguration`, which controls
+the color scheme, status bar, top toolbar items, LSP startup, initial editor
+mode, insert-only mode, and line-number gutter.

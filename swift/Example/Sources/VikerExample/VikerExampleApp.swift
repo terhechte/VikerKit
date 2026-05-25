@@ -1,11 +1,11 @@
 import AppKit
+import VikerKit
 
 @MainActor
 final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
-    private var editorContent: VikerExampleEditorContent?
-    private var errorContent: VikerExampleEditorErrorContent?
-    private var lspSession: VikerExampleLspWorkspaceSession?
+    private var editorContent: VikerEditorComponent?
+    private var errorContent: ExampleErrorContent?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenu()
@@ -19,10 +19,8 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
 
     func windowWillClose(_ notification: Notification) {
         editorContent?.willClose()
-        lspSession?.stop()
         editorContent = nil
         errorContent = nil
-        lspSession = nil
     }
 
     @objc private func openDocument(_ sender: Any?) {
@@ -48,7 +46,13 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
         errorContent = nil
 
         do {
-            let editor = try VikerExampleEditorContent(url: standardizedURL)
+            let configuration = VikerEditorConfiguration(
+                loadsLSPs: true,
+                initialMode: .normal,
+                showsLineNumbers: true,
+                autosaves: false
+            )
+            let editor = try VikerEditorComponent(url: standardizedURL, configuration: configuration)
             editor.onTitleChange = { [weak self] title in
                 self?.window?.title = title
             }
@@ -62,7 +66,6 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
                 self?.window?.title = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
             }
 
-            attachLspIfAvailable(to: editor, documentURL: standardizedURL)
             window.contentView = editor.view
             window.title = editor.title
             editorContent = editor
@@ -75,28 +78,11 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
                 editor.makeFirstResponder()
             }
         } catch {
-            let errorContent = VikerExampleEditorErrorContent(url: standardizedURL, error: error)
+            let errorContent = ExampleErrorContent(url: standardizedURL, error: error)
             window.contentView = errorContent.view
             window.title = errorContent.title
             self.errorContent = errorContent
             window.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    private func attachLspIfAvailable(to editor: VikerExampleEditorContent, documentURL: URL) {
-        let rootURL = documentURL.deletingLastPathComponent().standardizedFileURL
-        editor.setWorkspaceRoot(rootURL)
-
-        do {
-            if lspSession?.rootURL != rootURL {
-                lspSession?.stop()
-                lspSession = try VikerExampleLspWorkspaceSession(rootURL: rootURL)
-            }
-            if let lspSession {
-                try editor.attachLspSession(lspSession)
-            }
-        } catch {
-            editor.presentLspUnavailable(error)
         }
     }
 
@@ -189,6 +175,44 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
         }
 
         return fileURL
+    }
+}
+
+@MainActor
+private final class ExampleErrorContent {
+    let view: NSView
+    let title: String
+
+    init(url: URL, error: Error) {
+        title = "Unable to open \(url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent)"
+
+        let containerView = NSView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.wantsLayer = true
+        containerView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .preferredFont(forTextStyle: .title2)
+        titleLabel.textColor = .labelColor
+
+        let detailLabel = NSTextField(wrappingLabelWithString: String(describing: error))
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = .preferredFont(forTextStyle: .body)
+        detailLabel.textColor = .secondaryLabelColor
+
+        containerView.addSubview(titleLabel)
+        containerView.addSubview(detailLabel)
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 24),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: containerView.trailingAnchor, constant: -24),
+            titleLabel.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 24),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -24),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8)
+        ])
+
+        view = containerView
     }
 }
 

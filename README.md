@@ -18,6 +18,8 @@ Viker includes tree-sitter highlighting and language-aware LSP/formatting hooks 
   to wasm today and the recommended package boundary.
 - [Swift Example](swift/Example/README.md): standalone macOS editor example
   that depends only on the local `VikerKit` Swift package.
+- [VikerKit](swift/VikerKit/README.md): generated Swift package plus the
+  reusable AppKit `VikerEditorComponent`.
 - [Website](website/index.html): static product site with mock screenshot
   placeholders.
 
@@ -69,6 +71,11 @@ The Swift package build produces `swift/VikerKit`, with a generated
 `VikerKitFFI.xcframework` binary target for iOS and macOS plus generated
 UniFFI Swift sources. Add that folder as a local package in Xcode and `import
 VikerKit`.
+
+On macOS, `VikerKit` includes `VikerEditorComponent`, a reusable AppKit editor
+view around the Viker core. Initialize it with `VikerEditorConfiguration` to
+choose the color scheme, status bar visibility, top toolbar items, LSP loading,
+initial insert/normal mode, insert-only behavior, and line-number gutter.
 
 The standalone Swift example in `swift/Example` is a macOS executable package
 that uses `VikerKit` through the local `../VikerKit` package dependency. It can

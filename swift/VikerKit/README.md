@@ -16,3 +16,48 @@ VikerKitFFI` so Swift can import UniFFI's C symbols correctly.
 
 After generation, add this folder as a local Swift package in Xcode and import
 `VikerKit` from the Swift editor app.
+
+## AppKit Editor Component
+
+On macOS, `VikerKit` also includes `VikerEditorComponent`, a reusable AppKit
+editor view backed by the generated Viker core APIs. The component ships as
+Swift source in this package and links against `VikerKitFFI.xcframework`.
+
+```swift
+import AppKit
+import VikerKit
+
+let component = try VikerEditorComponent(
+    url: fileURL,
+    configuration: VikerEditorConfiguration(
+        colorScheme: .dark,
+        showsStatusBar: true,
+        toolbarItems: [.save, .workspaceSymbols, .lsp, .mode, .path],
+        loadsLSPs: true,
+        initialMode: .insert,
+        disablesNormalMode: false,
+        showsLineNumbers: true
+    )
+)
+
+window.contentView = component.view
+component.makeFirstResponder()
+```
+
+`VikerEditorConfiguration` controls:
+
+- `colorScheme`: use `.dark`, `.light`, or provide a custom
+  `VikerEditorColorScheme`.
+- `showsStatusBar`: show or hide the bottom status text.
+- `toolbarItems`: choose which top toolbar items are visible, or pass `[]` to
+  hide the toolbar.
+- `loadsLSPs`: attempt to start the language server for the opened document.
+- `initialMode`: start in `.normal` or `.insert`.
+- `disablesNormalMode`: keep the editor insert-only and prevent returning to
+  normal mode.
+- `showsLineNumbers`: show or hide the gutter line numbers.
+
+The component exposes callbacks for file navigation and title changes:
+`onTitleChange`, `onOpenFile`, `onOpenLocation`, and `onFileURLChange`. Call
+`willClose()` when the containing window or tab is closing so pending autosave
+and LSP state can be flushed.
