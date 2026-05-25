@@ -3,6 +3,8 @@ import VikerKit
 
 @MainActor
 final class VikerExampleEditorContent: NSObject {
+    private static let maximumTextHistoryEntries = 200
+
     private let containerView = NSView()
     private let toolbar = VikerExampleToolbarView()
     private let saveButton = NSButton()
@@ -38,8 +40,11 @@ final class VikerExampleEditorContent: NSObject {
     private var mouseSelectionMode: VikerSelectionMode = .character
     private var isExtendingMouseSelection = false
     private var mouseSelectionPreservesEditorMode = false
+    private var mouseTextSelectionAnchor: EditorTextSelectionAnchor?
     private var transientSelection: EditorTransientSelection?
     private var transientSelectionDrag: EditorTransientSelectionDrag?
+    private var editorUndoStack: [EditorTextHistoryEntry] = []
+    private var editorRedoStack: [EditorTextHistoryEntry] = []
     private let showsToolbar: Bool
     private let autosaves: Bool
     private let autosaveDelay: TimeInterval
@@ -342,6 +347,22 @@ final class VikerExampleEditorContent: NSObject {
                 return true
             }
         }
+        editorView.onUndo = { [weak self] in
+            do {
+                return try self?.performUndoOrRedo(redo: false) ?? false
+            } catch {
+                self?.present(error)
+                return true
+            }
+        }
+        editorView.onRedo = { [weak self] in
+            do {
+                return try self?.performUndoOrRedo(redo: true) ?? false
+            } catch {
+                self?.present(error)
+                return true
+            }
+        }
         editorView.onSave = { [weak self] in
             self?.saveDocument()
         }
@@ -357,7 +378,7 @@ final class VikerExampleEditorContent: NSObject {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
-        if handleInsertSelectionShortcut(event) {
+        if handleInsertEditingShortcut(event) {
             return true
         }
 
@@ -373,8 +394,10 @@ final class VikerExampleEditorContent: NSObject {
         do {
             statusOverride = nil
             transientSelectionDrag = nil
+            let historyBefore = try currentTextHistorySnapshot()
             let deletesOnly = try handleTransientSelectionReplacement(event, keyEvent: keyEvent)
             if deletesOnly {
+                try recordTextHistory(before: historyBefore)
                 clearEditorError(source: .operation)
                 refreshSnapshot()
                 scheduleAutosaveIfNeeded()
@@ -382,6 +405,7 @@ final class VikerExampleEditorContent: NSObject {
             }
 
             let effects = try editor.processKey(event: keyEvent)
+            try recordTextHistory(before: historyBefore)
             applyEffects(effects)
             clearEditorError(source: .operation)
             refreshSnapshot()
@@ -397,12 +421,14 @@ final class VikerExampleEditorContent: NSObject {
         do {
             statusOverride = nil
             transientSelectionDrag = nil
+            let historyBefore = try currentTextHistorySnapshot()
             if Self.isTextSelectionMode(snapshot.mode), transientSelection != nil {
                 _ = try deleteTransientSelectionContents()
             } else {
                 transientSelection = nil
             }
             let effects = try editor.inputText(text: text)
+            try recordTextHistory(before: historyBefore)
             applyEffects(effects)
             clearEditorError(source: .operation)
             refreshSnapshot()
@@ -418,6 +444,7 @@ final class VikerExampleEditorContent: NSObject {
             mouseSelectionAnchor = nil
             isExtendingMouseSelection = false
             mouseSelectionPreservesEditorMode = false
+            mouseTextSelectionAnchor = nil
             transientSelectionDrag = nil
 
             if Self.isTextSelectionMode(snapshot.mode) {
@@ -465,15 +492,18 @@ final class VikerExampleEditorContent: NSObject {
             }
 
             if mouseSelectionPreservesEditorMode {
-                guard let anchor = mouseSelectionAnchor else { return }
-                let anchorPosition = try position(for: anchor)
                 let cursorPosition = try position(for: cell)
-                try setTransientSelection(
-                    anchor: anchorPosition,
-                    cursor: cursorPosition,
-                    mode: mouseSelectionMode,
-                    usesInsertionEndpoints: true
-                )
+                if let mouseTextSelectionAnchor {
+                    try extendMouseTextSelection(from: mouseTextSelectionAnchor, to: cursorPosition)
+                } else if let anchor = mouseSelectionAnchor {
+                    let anchorPosition = try position(for: anchor)
+                    try setTransientSelection(
+                        anchor: anchorPosition,
+                        cursor: cursorPosition,
+                        mode: mouseSelectionMode,
+                        usesInsertionEndpoints: true
+                    )
+                }
                 clearEditorError(source: .operation)
                 refreshSnapshot()
                 return
@@ -502,6 +532,7 @@ final class VikerExampleEditorContent: NSObject {
             mouseSelectionAnchor = nil
             isExtendingMouseSelection = false
             mouseSelectionPreservesEditorMode = false
+            mouseTextSelectionAnchor = nil
             transientSelectionDrag = nil
         } catch {
             transientSelectionDrag = nil
@@ -519,13 +550,19 @@ final class VikerExampleEditorContent: NSObject {
         }
 
         if cell.clickCount >= 3 {
-            let lineEnd = try lineEndPosition(row: position.row)
+            let paragraphRange = try paragraphSelectionRange(at: position)
             try setTransientSelection(
-                anchor: VikerPosition(row: position.row, column: 0),
-                cursor: lineEnd,
+                anchor: paragraphRange.start,
+                cursor: paragraphRange.end,
                 mode: .line,
                 usesInsertionEndpoints: false
             )
+            mouseTextSelectionAnchor = EditorTextSelectionAnchor(
+                lowerBound: paragraphRange.start,
+                upperBound: paragraphRange.end,
+                granularity: .paragraph
+            )
+            mouseSelectionPreservesEditorMode = true
         } else if cell.clickCount == 2 {
             if let wordRange = try wordSelectionRange(at: position) {
                 try setTransientSelection(
@@ -534,6 +571,12 @@ final class VikerExampleEditorContent: NSObject {
                     mode: .character,
                     usesInsertionEndpoints: true
                 )
+                mouseTextSelectionAnchor = EditorTextSelectionAnchor(
+                    lowerBound: wordRange.start,
+                    upperBound: wordRange.end,
+                    granularity: .word
+                )
+                mouseSelectionPreservesEditorMode = true
             } else {
                 try editor.clearSelection()
                 _ = try editor.setCursor(row: position.row, column: position.column)
@@ -554,10 +597,15 @@ final class VikerExampleEditorContent: NSObject {
             mouseSelectionAnchor = cell
             mouseSelectionMode = cell.modifierFlags.contains(.option) ? .block : .character
             mouseSelectionPreservesEditorMode = true
+            mouseTextSelectionAnchor = EditorTextSelectionAnchor(
+                lowerBound: position,
+                upperBound: position,
+                granularity: .character
+            )
         }
     }
 
-    private func handleInsertSelectionShortcut(_ event: NSEvent) -> Bool {
+    private func handleInsertEditingShortcut(_ event: NSEvent) -> Bool {
         guard Self.isTextSelectionMode(snapshot.mode) else { return false }
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -570,12 +618,19 @@ final class VikerExampleEditorContent: NSObject {
                     return copySelection()
                 case "x":
                     return try cutSelection()
+                case "z" where flags.contains(.shift):
+                    return try performUndoOrRedo(redo: true)
+                case "z":
+                    return try performUndoOrRedo(redo: false)
                 default:
                     break
                 }
             }
 
-            guard flags.contains(.shift) else { return false }
+            if try handleInsertDeleteShortcut(event, flags: flags) {
+                return true
+            }
+
             guard [123, 124, 125, 126].contains(Int(event.keyCode)) else { return false }
 
             let current = transientSelection?.cursor ?? snapshot.cursor
@@ -600,13 +655,13 @@ final class VikerExampleEditorContent: NSObject {
                 case 124:
                     target = try nextWordBoundary(from: current)
                 case 125:
-                    target = try lineEndPosition(row: current.row)
+                    target = try paragraphBoundary(from: current, direction: .forward)
                 case 126:
-                    target = VikerPosition(row: current.row, column: 0)
+                    target = try paragraphBoundary(from: current, direction: .backward)
                 default:
                     return false
                 }
-            } else {
+            } else if flags.contains(.shift) {
                 switch event.keyCode {
                 case 123:
                     target = try previousInsertionPosition(from: current)
@@ -619,16 +674,25 @@ final class VikerExampleEditorContent: NSObject {
                 default:
                     return false
                 }
+            } else {
+                return false
             }
 
-            let anchor = transientSelection?.anchor ?? snapshot.cursor
             statusOverride = nil
-            try setTransientSelection(
-                anchor: anchor,
-                cursor: target,
-                mode: .character,
-                usesInsertionEndpoints: true
-            )
+            transientSelectionDrag = nil
+
+            if flags.contains(.shift) {
+                let anchor = transientSelection?.anchor ?? snapshot.cursor
+                try setTransientSelection(
+                    anchor: anchor,
+                    cursor: target,
+                    mode: .character,
+                    usesInsertionEndpoints: true
+                )
+            } else {
+                transientSelection = nil
+                _ = try editor.setCursor(row: target.row, column: target.column)
+            }
             clearEditorError(source: .operation)
             refreshSnapshot()
             return true
@@ -636,6 +700,78 @@ final class VikerExampleEditorContent: NSObject {
             present(error)
             return true
         }
+    }
+
+    private func handleInsertDeleteShortcut(_ event: NSEvent, flags: NSEvent.ModifierFlags) throws -> Bool {
+        let keyCode = Int(event.keyCode)
+        let controlKey = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
+            ? event.charactersIgnoringModifiers?.lowercased()
+            : nil
+        let deletesBackwardLine = keyCode == 51 && flags.contains(.command)
+        let deletesBackwardWord = keyCode == 51 && flags.contains(.option)
+        let deletesBackwardCharacter = controlKey == "h"
+        let deletesForwardLine = (keyCode == 117 && flags.contains(.command)) || controlKey == "k"
+        let deletesForwardWord = keyCode == 117 && flags.contains(.option)
+        let deletesForward = keyCode == 117
+        let deletesForwardCharacter = deletesForward || controlKey == "d"
+        guard deletesBackwardLine
+            || deletesBackwardWord
+            || deletesBackwardCharacter
+            || deletesForwardLine
+            || deletesForwardWord
+            || deletesForwardCharacter else {
+            return false
+        }
+
+        statusOverride = nil
+        transientSelectionDrag = nil
+        let historyBefore = try currentTextHistorySnapshot()
+
+        if transientSelection != nil {
+            _ = try deleteTransientSelectionContents()
+            try recordTextHistory(before: historyBefore)
+            clearEditorError(source: .operation)
+            refreshSnapshot()
+            scheduleAutosaveIfNeeded()
+            return true
+        }
+
+        let text = snapshot.text
+        let cursorOffset = Self.scalarOffset(for: snapshot.cursor, in: text)
+        let scalarCount = text.unicodeScalars.count
+        let range: Range<Int>
+
+        if deletesBackwardLine {
+            let start = Self.scalarOffset(for: VikerPosition(row: snapshot.cursor.row, column: 0), in: text)
+            range = start..<cursorOffset
+        } else if deletesBackwardWord {
+            let start = Self.scalarOffset(for: try previousWordBoundary(from: snapshot.cursor), in: text)
+            range = start..<cursorOffset
+        } else if deletesBackwardCharacter {
+            let start = Self.scalarOffset(for: try previousInsertionPosition(from: snapshot.cursor), in: text)
+            range = start..<cursorOffset
+        } else if deletesForwardLine {
+            let lineEndOffset = Self.scalarOffset(for: try lineEndPosition(row: snapshot.cursor.row), in: text)
+            if cursorOffset < lineEndOffset {
+                range = cursorOffset..<lineEndOffset
+            } else {
+                range = cursorOffset..<min(cursorOffset + 1, scalarCount)
+            }
+        } else if flags.contains(.option) {
+            let end = Self.scalarOffset(for: try nextWordBoundary(from: snapshot.cursor), in: text)
+            range = cursorOffset..<end
+        } else {
+            range = cursorOffset..<min(cursorOffset + 1, scalarCount)
+        }
+
+        guard try replaceText(range: range, with: "", cursorOffset: range.lowerBound) else {
+            return true
+        }
+        try recordTextHistory(before: historyBefore)
+        clearEditorError(source: .operation)
+        refreshSnapshot()
+        scheduleAutosaveIfNeeded()
+        return true
     }
 
     private func handleTransientSelectionReplacement(_ event: NSEvent, keyEvent: VikerKeyEvent) throws -> Bool {
@@ -691,6 +827,36 @@ final class VikerExampleEditorContent: NSObject {
         )
     }
 
+    private func extendMouseTextSelection(from anchor: EditorTextSelectionAnchor, to position: VikerPosition) throws {
+        switch anchor.granularity {
+        case .character:
+            try setTransientSelection(
+                anchor: anchor.lowerBound,
+                cursor: position,
+                mode: .character,
+                usesInsertionEndpoints: true
+            )
+        case .word:
+            let targetRange = try wordSelectionRange(at: position) ?? (start: position, end: position)
+            let extendsBackward = Self.precedesPosition(position, anchor.lowerBound)
+            try setTransientSelection(
+                anchor: extendsBackward ? anchor.upperBound : anchor.lowerBound,
+                cursor: extendsBackward ? targetRange.start : targetRange.end,
+                mode: .character,
+                usesInsertionEndpoints: true
+            )
+        case .paragraph:
+            let targetRange = try paragraphSelectionRange(at: position)
+            let extendsBackward = Self.precedesPosition(position, anchor.lowerBound)
+            try setTransientSelection(
+                anchor: extendsBackward ? anchor.upperBound : anchor.lowerBound,
+                cursor: extendsBackward ? targetRange.start : targetRange.end,
+                mode: .line,
+                usesInsertionEndpoints: false
+            )
+        }
+    }
+
     private func beginTransientSelectionDragIfNeeded(at position: VikerPosition, copies: Bool) throws -> Bool {
         guard let selectedText = selectedTransientText(),
               !selectedText.isEmpty,
@@ -722,6 +888,7 @@ final class VikerExampleEditorContent: NSObject {
         let originalText = snapshot.text
         let originalScalarCount = originalText.unicodeScalars.count
         let dropOffset = Self.scalarOffset(for: selectionDrag.dropPosition, in: originalText)
+        let historyBefore = try currentTextHistorySnapshot()
 
         let insertionOffset: Int
         let newText: String
@@ -763,6 +930,7 @@ final class VikerExampleEditorContent: NSObject {
             usesInsertionEndpoints: true
         )
         _ = try editor.setCursor(row: cursor.row, column: cursor.column)
+        try recordTextHistory(before: historyBefore)
         clearEditorError(source: .operation)
         refreshSnapshot()
         scheduleAutosaveIfNeeded()
@@ -782,7 +950,9 @@ final class VikerExampleEditorContent: NSObject {
 
     private func cutSelection() throws -> Bool {
         guard copySelection() else { return false }
+        let historyBefore = try currentTextHistorySnapshot()
         _ = try deleteTransientSelectionContents()
+        try recordTextHistory(before: historyBefore)
         clearEditorError(source: .operation)
         refreshSnapshot()
         scheduleAutosaveIfNeeded()
@@ -802,6 +972,53 @@ final class VikerExampleEditorContent: NSObject {
         return true
     }
 
+    private func performUndoOrRedo(redo: Bool) throws -> Bool {
+        let wasTextSelectionMode = Self.isTextSelectionMode(snapshot.mode)
+        guard wasTextSelectionMode || snapshot.mode == .normal else { return false }
+
+        statusOverride = nil
+        transientSelection = nil
+        transientSelectionDrag = nil
+
+        if redo {
+            guard let entry = editorRedoStack.popLast() else { return true }
+            try restoreTextHistorySnapshot(entry.after)
+            editorUndoStack.append(entry)
+        } else {
+            guard let entry = editorUndoStack.popLast() else { return true }
+            try restoreTextHistorySnapshot(entry.before)
+            editorRedoStack.append(entry)
+        }
+
+        clearEditorError(source: .operation)
+        refreshSnapshot()
+        scheduleAutosaveIfNeeded()
+        return true
+    }
+
+    private func currentTextHistorySnapshot() throws -> EditorTextHistorySnapshot {
+        EditorTextHistorySnapshot(
+            text: try editor.text(),
+            cursor: try editor.cursor()
+        )
+    }
+
+    private func recordTextHistory(before: EditorTextHistorySnapshot) throws {
+        let after = try currentTextHistorySnapshot()
+        guard before.text != after.text else { return }
+
+        editorUndoStack.append(EditorTextHistoryEntry(before: before, after: after))
+        if editorUndoStack.count > Self.maximumTextHistoryEntries {
+            editorUndoStack.removeFirst(editorUndoStack.count - Self.maximumTextHistoryEntries)
+        }
+        editorRedoStack.removeAll()
+    }
+
+    private func restoreTextHistorySnapshot(_ historySnapshot: EditorTextHistorySnapshot) throws {
+        try editor.setText(text: historySnapshot.text)
+        _ = try editor.setCursor(row: historySnapshot.cursor.row, column: historySnapshot.cursor.column)
+    }
+
     @discardableResult
     private func deleteTransientSelectionContents() throws -> Bool {
         guard let selectionRange = transientTextRange(in: snapshot.text), !selectionRange.isEmpty else {
@@ -809,15 +1026,22 @@ final class VikerExampleEditorContent: NSObject {
             return false
         }
 
+        _ = try replaceText(range: selectionRange, with: "", cursorOffset: selectionRange.lowerBound)
+        transientSelection = nil
+        return true
+    }
+
+    @discardableResult
+    private func replaceText(range: Range<Int>, with replacement: String, cursorOffset: Int) throws -> Bool {
+        guard !range.isEmpty || !replacement.isEmpty else { return false }
         let newText = Self.replacingUnicodeScalars(
             in: snapshot.text,
-            range: selectionRange,
-            with: ""
+            range: range,
+            with: replacement
         )
         try editor.setText(text: newText)
-        let cursor = Self.position(forScalarOffset: selectionRange.lowerBound, in: newText)
+        let cursor = Self.position(forScalarOffset: cursorOffset, in: newText)
         _ = try editor.setCursor(row: cursor.row, column: cursor.column)
-        transientSelection = nil
         return true
     }
 
@@ -881,6 +1105,57 @@ final class VikerExampleEditorContent: NSObject {
             VikerPosition(row: position.row, column: UInt64(start)),
             VikerPosition(row: position.row, column: UInt64(end))
         )
+    }
+
+    private func paragraphSelectionRange(at position: VikerPosition) throws -> (start: VikerPosition, end: VikerPosition) {
+        let lineCount = max(Self.intClamped(try editor.lineCount()), 1)
+        let row = Self.clamped(Self.intClamped(position.row), lowerBound: 0, upperBound: lineCount - 1)
+
+        var startRow = row
+        var endRow = row
+        if try !editor.line(row: UInt64(row)).isEmpty {
+            while startRow > 0, try !editor.line(row: UInt64(startRow - 1)).isEmpty {
+                startRow -= 1
+            }
+            while endRow + 1 < lineCount, try !editor.line(row: UInt64(endRow + 1)).isEmpty {
+                endRow += 1
+            }
+        }
+
+        return (
+            VikerPosition(row: UInt64(startRow), column: 0),
+            VikerPosition(row: UInt64(endRow), column: 0)
+        )
+    }
+
+    private func paragraphBoundary(from position: VikerPosition, direction: EditorTextDirection) throws -> VikerPosition {
+        let lineCount = max(Self.intClamped(try editor.lineCount()), 1)
+        let paragraphRange = try paragraphSelectionRange(at: position)
+
+        switch direction {
+        case .backward:
+            if position != paragraphRange.start {
+                return paragraphRange.start
+            }
+            var row = Self.intClamped(paragraphRange.start.row) - 1
+            while row > 0, try editor.line(row: UInt64(row)).isEmpty {
+                row -= 1
+            }
+            guard row >= 0 else { return VikerPosition(row: 0, column: 0) }
+            return try paragraphSelectionRange(at: VikerPosition(row: UInt64(row), column: 0)).start
+        case .forward:
+            let paragraphEnd = try lineEndPosition(row: paragraphRange.end.row)
+            if position != paragraphEnd {
+                return paragraphEnd
+            }
+            var row = Self.intClamped(paragraphRange.end.row) + 1
+            while row + 1 < lineCount, try editor.line(row: UInt64(row)).isEmpty {
+                row += 1
+            }
+            guard row < lineCount else { return paragraphEnd }
+            let nextRange = try paragraphSelectionRange(at: VikerPosition(row: UInt64(row), column: 0))
+            return try lineEndPosition(row: nextRange.end.row)
+        }
     }
 
     private func previousInsertionPosition(from position: VikerPosition) throws -> VikerPosition {
@@ -1894,6 +2169,10 @@ final class VikerExampleEditorContent: NSObject {
         scalar == "_" || CharacterSet.alphanumerics.contains(scalar)
     }
 
+    private static func precedesPosition(_ lhs: VikerPosition, _ rhs: VikerPosition) -> Bool {
+        lhs.row < rhs.row || (lhs.row == rhs.row && lhs.column < rhs.column)
+    }
+
     private static func lineStartOffsets(in text: String) -> [Int] {
         var starts = [0]
         for (offset, scalar) in text.unicodeScalars.enumerated() where scalar == "\n" {
@@ -2180,6 +2459,33 @@ private struct EditorMouseCell {
     let modifierFlags: NSEvent.ModifierFlags
 }
 
+private enum EditorTextSelectionGranularity {
+    case character
+    case word
+    case paragraph
+}
+
+private enum EditorTextDirection {
+    case backward
+    case forward
+}
+
+private struct EditorTextSelectionAnchor {
+    let lowerBound: VikerPosition
+    let upperBound: VikerPosition
+    let granularity: EditorTextSelectionGranularity
+}
+
+private struct EditorTextHistorySnapshot {
+    let text: String
+    let cursor: VikerPosition
+}
+
+private struct EditorTextHistoryEntry {
+    let before: EditorTextHistorySnapshot
+    let after: EditorTextHistorySnapshot
+}
+
 private struct EditorTransientSelection {
     let anchor: VikerPosition
     let cursor: VikerPosition
@@ -2250,6 +2556,8 @@ private final class VikerEditorCanvasView: NSView {
     var onCopy: (() -> Bool)?
     var onCut: (() -> Bool)?
     var onSelectAll: (() -> Bool)?
+    var onUndo: (() -> Bool)?
+    var onRedo: (() -> Bool)?
     var onSave: (() -> Void)?
     var onMouseDown: ((EditorMouseCell) -> Void)?
     var onMouseDragged: ((EditorMouseCell) -> Void)?
@@ -2374,6 +2682,10 @@ private final class VikerEditorCanvasView: NSView {
         case "s":
             onSave?()
             return true
+        case "z" where flags.contains(.shift):
+            return onRedo?() ?? super.performKeyEquivalent(with: event)
+        case "z":
+            return onUndo?() ?? super.performKeyEquivalent(with: event)
         case "a":
             return onSelectAll?() ?? super.performKeyEquivalent(with: event)
         case "c":
@@ -2395,6 +2707,14 @@ private final class VikerEditorCanvasView: NSView {
 
     override func selectAll(_ sender: Any?) {
         _ = onSelectAll?()
+    }
+
+    @objc func undo(_ sender: Any?) {
+        _ = onUndo?()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        _ = onRedo?()
     }
 
     @objc func paste(_ sender: Any?) {
