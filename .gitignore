@@ -2,5 +2,5 @@
 CLAUDE.md
 unused
 .DS_Store
-swift/VikerKit/.build
+swift/*/.build
 website

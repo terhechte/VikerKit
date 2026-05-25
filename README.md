@@ -16,6 +16,8 @@ Viker includes tree-sitter highlighting and language-aware LSP/formatting hooks 
   added on this branch and how they are exposed through the frontends.
 - [Wasm / TypeScript Feasibility](docs/wasm-typescript.md): what can compile
   to wasm today and the recommended package boundary.
+- [Swift Example](swift/Example/README.md): standalone macOS editor example
+  that depends only on the local `VikerKit` Swift package.
 - [Website](website/index.html): static product site with mock screenshot
   placeholders.
 
@@ -48,6 +50,10 @@ cargo run -p viker-egui --example embedded_markdown
 # Swift package / xcframework
 cargo test -p viker-swift
 scripts/build-viker-swift-xcframework.sh
+
+# Swift macOS example
+swift build --package-path swift/Example
+swift run --package-path swift/Example VikerExample
 ```
 
 Starting the GUI without a file shows an `Open Folder` button. The selected
@@ -63,6 +69,12 @@ The Swift package build produces `swift/VikerKit`, with a generated
 `VikerKitFFI.xcframework` binary target for iOS and macOS plus generated
 UniFFI Swift sources. Add that folder as a local package in Xcode and `import
 VikerKit`.
+
+The standalone Swift example in `swift/Example` is a macOS executable package
+that uses `VikerKit` through the local `../VikerKit` package dependency. It can
+open a sample document by default or a file path passed on the command line.
+On macOS, `VikerKit` owns the native `libgit2` system-library link through
+`pkg-config`, so the example package does not declare that dependency itself.
 
 ## Features
 
