@@ -2,17 +2,19 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <version>" >&2
-  echo "Example: $0 0.2.0" >&2
+  echo "Usage: $0 <version> [vikerkit-ffi-checksum]" >&2
+  echo "Example: $0 0.2.0 fc973038eb46748a08bf28388697f04fde7239e69590a88156a80920ecb07ae7" >&2
 }
 
-if [[ $# -ne 1 ]]; then
+if [[ $# -lt 1 || $# -gt 2 ]]; then
   usage
   exit 64
 fi
 
 NEW_VERSION="$1"
+VIKERKIT_FFI_CHECKSUM="${2:-}"
 SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+SHA256_RE='^[0-9a-fA-F]{64}$'
 
 if [[ ! "$NEW_VERSION" =~ $SEMVER_RE ]]; then
   echo "error: '$NEW_VERSION' is not a valid semver version" >&2
@@ -20,9 +22,16 @@ if [[ ! "$NEW_VERSION" =~ $SEMVER_RE ]]; then
   exit 64
 fi
 
+if [[ -n "$VIKERKIT_FFI_CHECKSUM" && ! "$VIKERKIT_FFI_CHECKSUM" =~ $SHA256_RE ]]; then
+  echo "error: '$VIKERKIT_FFI_CHECKSUM' is not a valid SwiftPM checksum" >&2
+  usage
+  exit 64
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CARGO_TOML="$ROOT/Cargo.toml"
 CARGO_LOCK="$ROOT/Cargo.lock"
+PACKAGE_SWIFT="$ROOT/Package.swift"
 README="$ROOT/README.md"
 
 CURRENT_VERSION="$(
@@ -89,6 +98,23 @@ if [[ -f "$README" ]]; then
   ' "$README"
 fi
 
+if [[ -f "$PACKAGE_SWIFT" ]]; then
+  perl -0pi -e '
+    my $version = $ENV{"NEW_VERSION"};
+    my $count = s#(https://github\.com/terhechte/VikerKit/releases/download/)[^/"]+(/VikerKitFFI\.xcframework\.zip)#$1$version$2#g;
+    warn "warning: no VikerKitFFI release URL was updated in Package.swift\n" if $count == 0;
+  ' "$PACKAGE_SWIFT"
+
+  if [[ -n "$VIKERKIT_FFI_CHECKSUM" ]]; then
+    export VIKERKIT_FFI_CHECKSUM
+    perl -0pi -e '
+      my $checksum = $ENV{"VIKERKIT_FFI_CHECKSUM"};
+      my $count = s/(checksum: ")[0-9a-fA-F]{64}(")/$1$checksum$2/g;
+      warn "warning: no VikerKitFFI checksum was updated in Package.swift\n" if $count == 0;
+    ' "$PACKAGE_SWIFT"
+  fi
+fi
+
 if [[ "$CURRENT_VERSION" == "$NEW_VERSION" ]]; then
   echo "Viker version is already $NEW_VERSION."
 else
@@ -99,4 +125,10 @@ if [[ ${#workspace_package_names[@]} -gt 0 ]]; then
   echo "Workspace crates: ${workspace_package_names[*]}"
 fi
 
-echo "Next: run scripts/build-viker-swift-xcframework.sh, commit the changes, then tag the release as v$NEW_VERSION for SwiftPM."
+if [[ -z "$VIKERKIT_FFI_CHECKSUM" ]]; then
+  echo "Next: run scripts/build-viker-swift-xcframework.sh, zip VikerKitFFI.xcframework, compute its SwiftPM checksum, and update Package.swift."
+else
+  echo "Updated VikerKitFFI checksum in Package.swift."
+fi
+
+echo "Then commit the changes and tag the release as $NEW_VERSION for SwiftPM."

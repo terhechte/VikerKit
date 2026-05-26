@@ -67,24 +67,28 @@ The repository root is also a Swift package, so downstream apps can depend on
 the VikerKit repository directly and use the `VikerKit` product:
 
 ```swift
-.package(url: "https://github.com/terhechte/VikerKit.git", from: "0.1.0")
+.package(url: "https://github.com/terhechte/VikerKit.git", from: "0.1.1")
 ```
 
 Add `.product(name: "VikerKit", package: "VikerKit")` to the consuming target's
 dependencies.
 
-The checked-in `VikerKitFFI.xcframework` static libraries are tracked with Git
-LFS. Consumers resolving the package from Git need Git LFS enabled so SwiftPM
-receives the real binary files rather than LFS pointer files.
+Remote SwiftPM consumers download `VikerKitFFI.xcframework` from the matching
+GitHub release asset. The checked-in `swift/VikerKit` package still keeps a
+local `VikerKitFFI.xcframework` for development and the example app.
 
-For a new release, update the workspace version and SwiftPM README snippet with:
+For a new release, rebuild the xcframework, zip it, compute its SwiftPM
+checksum, and update the workspace version:
 
 ```bash
-scripts/set-viker-version.sh 0.2.0
+scripts/build-viker-swift-xcframework.sh
+ditto -c -k --sequesterRsrc --keepParent swift/VikerKit/VikerKitFFI.xcframework VikerKitFFI.xcframework.zip
+swift package compute-checksum VikerKitFFI.xcframework.zip
+scripts/set-viker-version.sh 0.2.0 <checksum>
 ```
 
 SwiftPM resolves package versions from Git tags, so after rebuilding `VikerKit`
-and committing the release changes, tag the release as `v0.2.0`.
+and committing the release changes, tag the release as `0.2.0`.
 
 On macOS, `VikerKit` includes `VikerEditorComponent`, a reusable AppKit editor
 view around the Viker core. Initialize it with `VikerEditorConfiguration` to
