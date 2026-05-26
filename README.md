@@ -64,13 +64,13 @@ UniFFI Swift sources. Add that folder as a local package in Xcode and `import
 VikerKit`.
 
 The repository root is also a Swift package, so downstream apps can depend on
-the Viker repository directly and use the `VikerKit` product:
+the VikerKit repository directly and use the `VikerKit` product:
 
 ```swift
-.package(url: "https://github.com/<owner>/<repo>.git", from: "0.1.0")
+.package(url: "https://github.com/terhechte/VikerKit.git", from: "0.1.0")
 ```
 
-Add `.product(name: "VikerKit", package: "Viker")` to the consuming target's
+Add `.product(name: "VikerKit", package: "VikerKit")` to the consuming target's
 dependencies.
 
 The checked-in `VikerKitFFI.xcframework` static libraries are tracked with Git
@@ -210,10 +210,9 @@ and layout types into shared types such as `KeyInput`, `AreaRect`, and
 
 - LSP is active-buffer oriented; switching to a different language/root restarts the active server.
 - zsh LSP uses bash-language-server as a best-effort fallback.
-- Clipboard support is currently macOS-only (`pbcopy` / `pbpaste`)
+- Native clipboard support uses `clipboard-rs` for text registers on supported platforms.
 - LSP WorkspaceEdit currently applies only to the active file
 
 ## License
 
 MIT
-
