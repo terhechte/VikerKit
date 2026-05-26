@@ -56,6 +56,44 @@ component.makeFirstResponder()
 - `disablesNormalMode`: keep the editor insert-only and prevent returning to
   normal mode.
 - `showsLineNumbers`: show or hide the gutter line numbers.
+- `enablesAutosuggestions`: show inline AppKit autosuggestions for LSP
+  completion and `@` context mentions.
+- `enablesMentionSuggestions`: enable the `@` context picker.
+
+The autosuggestion popup supports arrow-key navigation, `Ctrl-N` / `Ctrl-P`,
+`Return` or `Tab` to accept, and `Esc` to dismiss. LSP completions are requested
+automatically while typing in insert mode and explicitly with `Ctrl-Space`.
+
+Typing `@` opens the same popup for context suggestions. File suggestions come
+from `workspaceRootURL` when available, falling back to the current file's
+folder. Consuming apps can register static actions or provide dynamic
+suggestions:
+
+```swift
+component.registerContextSuggestion(
+    VikerEditorContextSuggestion(
+        id: "run-tests",
+        title: "Run Tests",
+        category: "Actions",
+        systemImageName: "play.fill",
+        action: { runTests() }
+    )
+)
+
+component.contextSuggestionProvider = { request in
+    recentDocuments
+        .filter { request.query.isEmpty || $0.title.localizedCaseInsensitiveContains(request.query) }
+        .map { document in
+            VikerEditorContextSuggestion(
+                id: "doc:\(document.id)",
+                title: document.title,
+                category: "Docs",
+                systemImageName: "doc.text",
+                insertText: "@\(document.slug)"
+            )
+        }
+}
+```
 
 The component exposes callbacks for file navigation and title changes:
 `onTitleChange`, `onOpenFile`, `onOpenLocation`, and `onFileURLChange`. Call

@@ -94,6 +94,10 @@ On macOS, `VikerKit` includes `VikerEditorComponent`, a reusable AppKit editor
 view around the Viker core. Initialize it with `VikerEditorConfiguration` to
 choose the color scheme, status bar visibility, top toolbar items, LSP loading,
 initial insert/normal mode, insert-only behavior, and line-number gutter.
+The component also includes an AppKit autosuggestion popup for LSP completions
+and `@` context mentions. Consuming apps can register static context actions or
+provide dynamic suggestions, while file suggestions come from the configured
+workspace root or current file folder.
 
 The standalone Swift example in `swift/Example` is a macOS executable package
 that uses `VikerKit` through the local `../VikerKit` package dependency. It can

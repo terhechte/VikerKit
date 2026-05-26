@@ -33,6 +33,8 @@ public struct VikerEditorConfiguration {
     public var autosaveDelay: TimeInterval
     public var forcedSyntaxLanguage: VikerSyntaxLanguage?
     public var workspaceRootURL: URL?
+    public var enablesAutosuggestions: Bool
+    public var enablesMentionSuggestions: Bool
 
     public init(
         colorScheme: VikerEditorColorScheme = .dark,
@@ -45,7 +47,9 @@ public struct VikerEditorConfiguration {
         autosaves: Bool = false,
         autosaveDelay: TimeInterval = 0.7,
         forcedSyntaxLanguage: VikerSyntaxLanguage? = nil,
-        workspaceRootURL: URL? = nil
+        workspaceRootURL: URL? = nil,
+        enablesAutosuggestions: Bool = true,
+        enablesMentionSuggestions: Bool = true
     ) {
         self.colorScheme = colorScheme
         self.showsStatusBar = showsStatusBar
@@ -58,6 +62,8 @@ public struct VikerEditorConfiguration {
         self.autosaveDelay = autosaveDelay
         self.forcedSyntaxLanguage = forcedSyntaxLanguage
         self.workspaceRootURL = workspaceRootURL?.standardizedFileURL
+        self.enablesAutosuggestions = enablesAutosuggestions
+        self.enablesMentionSuggestions = enablesMentionSuggestions
     }
 }
 
@@ -81,6 +87,7 @@ public final class VikerEditorComponent: NSObject {
     private let errorBar = NSView()
     private let errorLabel = NSTextField.vikerEditorLabel("", style: .caption, color: .systemRed)
     private let copyErrorButton = NSButton()
+    private let autosuggestionView = VikerEditorAutosuggestionView()
 
     private let editor: VikerEditor
     private var snapshot: VikerSnapshot
@@ -92,10 +99,16 @@ public final class VikerEditorComponent: NSObject {
     private var lastLspSyncedText: String?
     private var pendingFormatSaveRequestID: UInt64?
     private var pendingWorkspaceSymbolsRequestID: UInt64?
+    private var pendingCompletionRequestID: UInt64?
+    private var completionRequestGeneration: UInt64 = 0
     private var statusOverride: String?
     private var currentFileURL: URL?
     private var workspaceRootURL: URL?
     private var editorErrors: [EditorErrorSource: String] = [:]
+    private var autosuggestionSession: EditorAutosuggestionSession?
+    private var registeredContextSuggestions: [VikerEditorContextSuggestion] = []
+    private var cachedProjectFilesRootURL: URL?
+    private var cachedProjectFiles: [String]?
     private var mouseSelectionAnchor: EditorMouseCell?
     private var mouseSelectionMode: VikerSelectionMode = .character
     private var isExtendingMouseSelection = false
@@ -119,6 +132,12 @@ public final class VikerEditorComponent: NSObject {
     public var onOpenFile: ((URL) -> Void)?
     public var onOpenLocation: ((VikerEditorLocation) -> Void)?
     public var onFileURLChange: ((URL) -> Void)?
+    public var contextSuggestionProvider: VikerEditorContextSuggestionProvider? {
+        didSet {
+            refreshMentionSuggestionsIfNeeded()
+        }
+    }
+    public var onContextSuggestionSelected: ((VikerEditorContextSuggestion) -> Void)?
     public var currentDocumentURL: URL? { currentFileURL }
     public var vikerEditor: VikerEditor { editor }
 
@@ -160,6 +179,7 @@ public final class VikerEditorComponent: NSObject {
             showsLineNumbers: configuration.showsLineNumbers
         )
         self.currentFileURL = initialSnapshot.filePath.map(Self.fileURL(fromPath:)) ?? url?.standardizedFileURL
+        self.workspaceRootURL = configuration.workspaceRootURL
         self.title = Self.title(from: initialSnapshot, fallbackURL: url?.standardizedFileURL)
         self.configuration = configuration
         self.showsToolbar = !configuration.toolbarItems.isEmpty
@@ -179,6 +199,22 @@ public final class VikerEditorComponent: NSObject {
 
     public var isProcessAlive: Bool { false }
 
+    public func registerContextSuggestion(_ suggestion: VikerEditorContextSuggestion) {
+        registeredContextSuggestions.removeAll { $0.id == suggestion.id }
+        registeredContextSuggestions.append(suggestion)
+        refreshMentionSuggestionsIfNeeded()
+    }
+
+    public func unregisterContextSuggestion(id: String) {
+        registeredContextSuggestions.removeAll { $0.id == id }
+        refreshMentionSuggestionsIfNeeded()
+    }
+
+    public func removeAllContextSuggestions() {
+        registeredContextSuggestions.removeAll()
+        refreshMentionSuggestionsIfNeeded()
+    }
+
     public func makeFirstResponder() {
         editorView.window?.makeFirstResponder(editorView)
     }
@@ -193,6 +229,7 @@ public final class VikerEditorComponent: NSObject {
     }
 
     public func willClose() {
+        dismissAutosuggestions()
         flushPendingAutosave()
         lspSession?.closeDocument(editor: editor, owner: self)
         lspSession = nil
@@ -236,7 +273,10 @@ public final class VikerEditorComponent: NSObject {
 
     public func setWorkspaceRoot(_ rootURL: URL?) {
         workspaceRootURL = rootURL?.standardizedFileURL
+        cachedProjectFilesRootURL = nil
+        cachedProjectFiles = nil
         updatePathLabel()
+        refreshMentionSuggestionsIfNeeded()
     }
 
     func presentLspUnavailable(_ error: Error) {
@@ -349,6 +389,7 @@ public final class VikerEditorComponent: NSObject {
 
         containerView.addSubview(scrollView)
         containerView.addSubview(footerStack)
+        containerView.addSubview(autosuggestionView)
 
         var constraints: [NSLayoutConstraint] = [
             scrollView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
@@ -414,8 +455,19 @@ public final class VikerEditorComponent: NSObject {
         }
 
         NSLayoutConstraint.activate(constraints)
+        wireAutosuggestionView()
         installThemeObserver()
         applyTheme(refreshSnapshot: false)
+    }
+
+    private func wireAutosuggestionView() {
+        autosuggestionView.onHover = { [weak self] index in
+            self?.selectAutosuggestion(index: index)
+        }
+        autosuggestionView.onCommit = { [weak self] index in
+            self?.selectAutosuggestion(index: index)
+            self?.acceptAutosuggestion()
+        }
     }
 
     private func wireEditorView() {
@@ -478,7 +530,12 @@ public final class VikerEditorComponent: NSObject {
     }
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        if handleAutosuggestionKeyDown(event) {
+            return true
+        }
+
         if configuration.disablesNormalMode, event.keyCode == 53 {
+            dismissAutosuggestions()
             transientSelection = nil
             clearEditorError(source: .operation)
             refreshSnapshot(syncLsp: false)
@@ -494,18 +551,25 @@ public final class VikerEditorComponent: NSObject {
             }
         }
 
-        if handleInsertEditingShortcut(event) {
-            return true
-        }
-
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
             guard event.charactersIgnoringModifiers?.lowercased() == "s" else { return false }
+            dismissAutosuggestions()
             saveDocument()
             return true
         }
 
         guard let keyEvent = Self.vikerKeyEvent(from: event) else { return false }
+
+        if Self.isCompletionShortcut(event) {
+            requestLspCompletion(explicit: true)
+            return true
+        }
+
+        if handleInsertEditingShortcut(event) {
+            updateAutosuggestionsAfterEditorChange(event: event, keyEvent: keyEvent)
+            return true
+        }
 
         do {
             statusOverride = nil
@@ -516,6 +580,7 @@ public final class VikerEditorComponent: NSObject {
                 try recordTextHistory(before: historyBefore)
                 clearEditorError(source: .operation)
                 refreshSnapshot()
+                updateAutosuggestionsAfterEditorChange(event: event, keyEvent: keyEvent)
                 scheduleAutosaveIfNeeded()
                 return true
             }
@@ -526,8 +591,10 @@ public final class VikerEditorComponent: NSObject {
             applyEffects(effects)
             clearEditorError(source: .operation)
             refreshSnapshot()
+            updateAutosuggestionsAfterEditorChange(event: event, keyEvent: keyEvent)
             scheduleAutosaveIfNeeded()
         } catch {
+            dismissAutosuggestions()
             present(error)
         }
         return true
@@ -559,14 +626,17 @@ public final class VikerEditorComponent: NSObject {
             applyEffects(effects)
             clearEditorError(source: .operation)
             refreshSnapshot()
+            refreshAutosuggestionsAfterTextMutation()
             scheduleAutosaveIfNeeded()
         } catch {
+            dismissAutosuggestions()
             present(error)
         }
     }
 
     private func handleMouseDown(_ cell: EditorMouseCell) {
         do {
+            dismissAutosuggestions()
             statusOverride = nil
             mouseSelectionAnchor = nil
             isExtendingMouseSelection = false
@@ -1562,6 +1632,7 @@ public final class VikerEditorComponent: NSObject {
         updateCommandLine()
         updateLspButtons()
         updateStatusLabel()
+        positionAutosuggestionView()
     }
 
     private func applyEffects(_ effects: [VikerEffect]) {
@@ -1660,6 +1731,24 @@ public final class VikerEditorComponent: NSObject {
             } catch {
                 present(error)
             }
+        case .completionUpdated:
+            if event.requestId == pendingCompletionRequestID,
+               let requestID = event.requestId {
+                pendingCompletionRequestID = nil
+                do {
+                    presentLspCompletions(try session.completionItems(requestID: requestID))
+                    refreshLspState(message: event.message)
+                } catch {
+                    dismissAutosuggestions()
+                    present(error)
+                }
+            } else {
+                if let requestID = event.requestId,
+                   (try? session.completionItems(requestID: requestID).isEmpty) == false {
+                    cancelCoreCompletionState()
+                }
+                refreshLspState(message: event.message)
+            }
         case .diagnosticsUpdated, .ready:
             if statusOverride == "Starting LSP" {
                 statusOverride = nil
@@ -1673,10 +1762,14 @@ public final class VikerEditorComponent: NSObject {
             if event.requestId == pendingWorkspaceSymbolsRequestID {
                 pendingWorkspaceSymbolsRequestID = nil
             }
+            if event.requestId == pendingCompletionRequestID {
+                pendingCompletionRequestID = nil
+                dismissAutosuggestions()
+            }
             lspMessage = "LSP error"
             setEditorError(event.message ?? "LSP error", source: .lsp)
             updateStatusLabel()
-        case .completionUpdated, .hoverUpdated, .referencesUpdated, .renameApplied:
+        case .hoverUpdated, .referencesUpdated, .renameApplied:
             refreshLspState(message: event.message)
         }
     }
@@ -1818,6 +1911,592 @@ public final class VikerEditorComponent: NSObject {
         }
 
         return nil
+    }
+
+    private func handleAutosuggestionKeyDown(_ event: NSEvent) -> Bool {
+        guard autosuggestionSession != nil else { return false }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let controlOnly = flags.contains(.control)
+            && !flags.contains(.command)
+            && !flags.contains(.option)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+
+        if controlOnly, key == "n" {
+            moveAutosuggestionSelection(delta: 1)
+            return true
+        }
+        if controlOnly, key == "p" {
+            moveAutosuggestionSelection(delta: -1)
+            return true
+        }
+
+        switch event.keyCode {
+        case 36, 76:
+            if autosuggestionSession?.selectedItem != nil {
+                acceptAutosuggestion()
+                return true
+            }
+            dismissAutosuggestions()
+            return false
+        case 48:
+            if flags.contains(.shift) {
+                moveAutosuggestionSelection(delta: -1)
+            } else if autosuggestionSession?.selectedItem != nil {
+                acceptAutosuggestion()
+            } else {
+                dismissAutosuggestions()
+                return false
+            }
+            return true
+        case 53:
+            dismissAutosuggestions()
+            return true
+        case 125:
+            moveAutosuggestionSelection(delta: 1)
+            return true
+        case 126:
+            moveAutosuggestionSelection(delta: -1)
+            return true
+        default:
+            if Self.isPlainTextInput(event) || event.keyCode == 51 || event.keyCode == 117 {
+                return false
+            }
+            dismissAutosuggestions()
+            return false
+        }
+    }
+
+    private func updateAutosuggestionsAfterEditorChange(event: NSEvent, keyEvent: VikerKeyEvent) {
+        guard configuration.enablesAutosuggestions else {
+            dismissAutosuggestions()
+            return
+        }
+
+        if refreshMentionSuggestionsIfNeeded() {
+            return
+        }
+
+        if autosuggestionSession?.mode == .mention {
+            dismissAutosuggestions()
+            return
+        }
+
+        guard Self.isTextSelectionMode(snapshot.mode) else {
+            dismissAutosuggestions()
+            return
+        }
+
+        if shouldRequestLspCompletion(after: event, keyEvent: keyEvent) {
+            requestLspCompletion(explicit: false)
+        } else if autosuggestionSession?.mode == .lsp {
+            dismissAutosuggestions()
+        }
+    }
+
+    private func refreshAutosuggestionsAfterTextMutation() {
+        guard configuration.enablesAutosuggestions else {
+            dismissAutosuggestions()
+            return
+        }
+
+        if refreshMentionSuggestionsIfNeeded() {
+            return
+        }
+
+        if autosuggestionSession?.mode == .lsp {
+            requestLspCompletion(explicit: false)
+        }
+    }
+
+    @discardableResult
+    private func refreshMentionSuggestionsIfNeeded() -> Bool {
+        guard configuration.enablesAutosuggestions,
+              configuration.enablesMentionSuggestions,
+              Self.isTextSelectionMode(snapshot.mode),
+              let token = currentMentionToken() else {
+            if autosuggestionSession?.mode == .mention {
+                dismissAutosuggestions()
+            }
+            return false
+        }
+
+        presentMentionSuggestions(query: token.query, replacementRange: token.range)
+        return true
+    }
+
+    private func shouldRequestLspCompletion(after event: NSEvent, keyEvent: VikerKeyEvent) -> Bool {
+        guard configuration.enablesAutosuggestions,
+              lspSession != nil,
+              isLspRunning,
+              Self.isTextSelectionMode(snapshot.mode),
+              currentMentionToken() == nil else {
+            return false
+        }
+
+        if keyEvent.key == .backspace {
+            return autosuggestionSession?.mode == .lsp && currentCompletionPrefix().query.isEmpty == false
+        }
+
+        guard keyEvent.key == .character,
+              let text = keyEvent.text,
+              Self.isPlainTextInput(event) else {
+            return false
+        }
+
+        return Self.isLspCompletionTriggerText(text)
+    }
+
+    private func requestLspCompletion(explicit: Bool) {
+        guard configuration.enablesAutosuggestions else { return }
+        guard Self.isTextSelectionMode(snapshot.mode) else { return }
+        guard let lspSession, isLspRunning else {
+            if explicit {
+                statusOverride = "LSP completion unavailable"
+                updateStatusLabel()
+            } else if autosuggestionSession?.mode == .lsp {
+                dismissAutosuggestions()
+            }
+            return
+        }
+
+        let prefix = currentCompletionPrefix()
+        if !explicit, prefix.query.isEmpty {
+            dismissAutosuggestions()
+            return
+        }
+
+        completionRequestGeneration &+= 1
+        let generation = completionRequestGeneration
+
+        if explicit {
+            autosuggestionSession = EditorAutosuggestionSession(
+                mode: .lsp,
+                query: prefix.query,
+                replacementRange: prefix.range,
+                items: [],
+                selectedIndex: 0,
+                status: "Loading completions"
+            )
+            updateAutosuggestionView()
+            performLspCompletionRequest(session: lspSession, generation: generation)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self, weak lspSession] in
+                guard let self,
+                      let lspSession,
+                      self.completionRequestGeneration == generation else { return }
+                self.performLspCompletionRequest(session: lspSession, generation: generation)
+            }
+        }
+    }
+
+    private func performLspCompletionRequest(
+        session lspSession: VikerEditorLspWorkspaceSession,
+        generation: UInt64
+    ) {
+        guard completionRequestGeneration == generation,
+              Self.isTextSelectionMode(snapshot.mode),
+              currentMentionToken() == nil else {
+            return
+        }
+
+        do {
+            let request = try lspSession.requestCompletion(
+                editor: editor,
+                row: snapshot.cursor.row,
+                column: snapshot.cursor.column,
+                owner: self
+            )
+            guard let requestID = request.id else {
+                autosuggestionSession = EditorAutosuggestionSession(
+                    mode: .lsp,
+                    query: currentCompletionPrefix().query,
+                    replacementRange: currentCompletionPrefix().range,
+                    items: [],
+                    selectedIndex: 0,
+                    status: "No completions"
+                )
+                updateAutosuggestionView()
+                return
+            }
+
+            pendingCompletionRequestID = requestID
+            if request.completed {
+                pendingCompletionRequestID = nil
+                presentLspCompletions(try lspSession.completionItems(requestID: requestID))
+            }
+        } catch {
+            pendingCompletionRequestID = nil
+            dismissAutosuggestions()
+            setEditorError("LSP completion failed: \(error.localizedDescription)", source: .lsp)
+            updateStatusLabel()
+        }
+    }
+
+    private func presentLspCompletions(_ completions: [VikerCompletionItem]) {
+        guard configuration.enablesAutosuggestions,
+              Self.isTextSelectionMode(snapshot.mode),
+              currentMentionToken() == nil else {
+            dismissAutosuggestions()
+            return
+        }
+
+        if !completions.isEmpty {
+            cancelCoreCompletionState()
+        }
+
+        let prefix = currentCompletionPrefix()
+        let items = Self.filteredCompletionItems(completions, query: prefix.query)
+            .prefix(80)
+            .map { completion in
+                EditorAutosuggestionItem(
+                    id: "lsp:\(completion.kind):\(completion.label)",
+                    title: completion.label,
+                    subtitle: completion.detail,
+                    detail: nil,
+                    badge: Self.completionKindLabel(completion.kind),
+                    systemImageName: Self.completionKindImageName(completion.kind),
+                    replacementText: Self.plainTextFromSnippet(completion.insertText ?? completion.label),
+                    contextSuggestion: nil,
+                    action: nil
+                )
+            }
+
+        if items.isEmpty, autosuggestionSession?.mode != .lsp {
+            dismissAutosuggestions()
+            return
+        }
+
+        autosuggestionSession = EditorAutosuggestionSession(
+            mode: .lsp,
+            query: prefix.query,
+            replacementRange: prefix.range,
+            items: Array(items),
+            selectedIndex: 0,
+            status: items.isEmpty ? "No completions" : nil
+        )
+        updateAutosuggestionView()
+    }
+
+    private func presentMentionSuggestions(query: String, replacementRange: Range<Int>) {
+        let effectiveWorkspaceRootURL = workspaceRootURL ?? currentFileURL?.deletingLastPathComponent().standardizedFileURL
+        let request = VikerEditorContextSuggestionRequest(
+            query: query,
+            currentFileURL: currentFileURL,
+            workspaceRootURL: effectiveWorkspaceRootURL
+        )
+        let fileItems = fileContextSuggestions(query: query).map { Self.autosuggestionItem(from: $0) }
+        let registeredItems = filteredRegisteredContextSuggestions(query: query).map { Self.autosuggestionItem(from: $0) }
+        let providedItems = (contextSuggestionProvider?(request) ?? []).map { Self.autosuggestionItem(from: $0) }
+        let items = Array((fileItems + registeredItems + providedItems).prefix(80))
+
+        autosuggestionSession = EditorAutosuggestionSession(
+            mode: .mention,
+            query: query,
+            replacementRange: replacementRange,
+            items: items,
+            selectedIndex: min(autosuggestionSession?.selectedIndex ?? 0, max(items.count - 1, 0)),
+            status: items.isEmpty ? "No context matches" : nil
+        )
+        updateAutosuggestionView()
+    }
+
+    private func fileContextSuggestions(query: String) -> [VikerEditorContextSuggestion] {
+        guard let rootURL = workspaceRootURL ?? currentFileURL?.deletingLastPathComponent().standardizedFileURL else {
+            return []
+        }
+
+        let paths: [String]
+        if let lspSession {
+            if let results = try? lspSession.searchFiles(query: query, limit: 32) {
+                paths = results.map(\.path)
+            } else {
+                paths = fallbackProjectFileMatches(rootURL: rootURL, query: query, limit: 32)
+            }
+        } else {
+            paths = fallbackProjectFileMatches(rootURL: rootURL, query: query, limit: 32)
+        }
+
+        return paths.map { path in
+            let parts = Self.fileSuggestionDisplayParts(path)
+            let url = rootURL.appendingPathComponent(path).standardizedFileURL
+            return VikerEditorContextSuggestion(
+                id: "file:\(path)",
+                title: parts.title,
+                subtitle: parts.subtitle,
+                detail: path,
+                category: "Files",
+                systemImageName: "doc.text",
+                insertText: "@\(path)",
+                fileURL: url
+            )
+        }
+    }
+
+    private func filteredRegisteredContextSuggestions(query: String) -> [VikerEditorContextSuggestion] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return registeredContextSuggestions }
+
+        return registeredContextSuggestions
+            .compactMap { suggestion -> (VikerEditorContextSuggestion, Int)? in
+                let searchable = [
+                    suggestion.title,
+                    suggestion.subtitle,
+                    suggestion.detail,
+                    suggestion.category,
+                ]
+                .compactMap { $0 }
+                .joined(separator: " ")
+                guard let score = Self.fuzzyScore(searchable, query: trimmedQuery) else { return nil }
+                return (suggestion, score)
+            }
+            .sorted { lhs, rhs in
+                lhs.1 == rhs.1
+                    ? lhs.0.title.localizedCaseInsensitiveCompare(rhs.0.title) == .orderedAscending
+                    : lhs.1 > rhs.1
+            }
+            .map(\.0)
+    }
+
+    private func fallbackProjectFileMatches(rootURL: URL, query: String, limit: Int) -> [String] {
+        let files = fallbackProjectFiles(rootURL: rootURL)
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedQuery.isEmpty {
+            return Array(files.prefix(limit))
+        }
+
+        return files
+            .compactMap { path -> (String, Int)? in
+                guard let score = Self.fuzzyScore(path, query: trimmedQuery) else { return nil }
+                return (path, score)
+            }
+            .sorted { lhs, rhs in
+                lhs.1 == rhs.1
+                    ? lhs.0.localizedCaseInsensitiveCompare(rhs.0) == .orderedAscending
+                    : lhs.1 > rhs.1
+            }
+            .prefix(limit)
+            .map(\.0)
+    }
+
+    private func fallbackProjectFiles(rootURL: URL) -> [String] {
+        let standardizedRoot = rootURL.standardizedFileURL
+        if cachedProjectFilesRootURL == standardizedRoot, let cachedProjectFiles {
+            return cachedProjectFiles
+        }
+
+        let skippedDirectories = Set([".git", "node_modules", ".build", "target", "DerivedData"])
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: standardizedRoot,
+            includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants],
+            errorHandler: nil
+        ) else {
+            return []
+        }
+
+        var files: [String] = []
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            if skippedDirectories.contains(name) {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            if values?.isDirectory == true {
+                continue
+            }
+            guard values?.isRegularFile == true else { continue }
+
+            let path = url.standardizedFileURL.path
+            let rootPath = standardizedRoot.path
+            guard path.hasPrefix(rootPath + "/") else { continue }
+            files.append(String(path.dropFirst(rootPath.count + 1)))
+
+            if files.count >= 6000 {
+                break
+            }
+        }
+
+        files.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        cachedProjectFilesRootURL = standardizedRoot
+        cachedProjectFiles = files
+        return files
+    }
+
+    private func selectAutosuggestion(index: Int) {
+        guard var session = autosuggestionSession,
+              session.items.indices.contains(index) else { return }
+        session.selectedIndex = index
+        autosuggestionSession = session
+        updateAutosuggestionView()
+    }
+
+    private func moveAutosuggestionSelection(delta: Int) {
+        guard var session = autosuggestionSession, !session.items.isEmpty else { return }
+        let count = session.items.count
+        session.selectedIndex = (session.selectedIndex + delta + count) % count
+        autosuggestionSession = session
+        updateAutosuggestionView()
+    }
+
+    private func acceptAutosuggestion() {
+        guard let session = autosuggestionSession,
+              let item = session.selectedItem else {
+            dismissAutosuggestions()
+            return
+        }
+
+        do {
+            let historyBefore = try currentTextHistorySnapshot()
+            let replacementRange = currentReplacementRange(for: session) ?? session.replacementRange
+            let replacementText = item.replacementText
+                ?? (item.action != nil || item.contextSuggestion?.action != nil ? "" : nil)
+
+            if let replacementText {
+                _ = try replaceText(
+                    range: replacementRange,
+                    with: replacementText,
+                    cursorOffset: replacementRange.lowerBound + replacementText.unicodeScalars.count
+                )
+            }
+
+            dismissAutosuggestions()
+            try recordTextHistory(before: historyBefore)
+            clearEditorError(source: .operation)
+            refreshSnapshot()
+            scheduleAutosaveIfNeeded()
+
+            if let contextSuggestion = item.contextSuggestion {
+                contextSuggestion.action?()
+                onContextSuggestionSelected?(contextSuggestion)
+            } else {
+                item.action?()
+            }
+        } catch {
+            dismissAutosuggestions()
+            present(error)
+        }
+    }
+
+    private func currentReplacementRange(for session: EditorAutosuggestionSession) -> Range<Int>? {
+        switch session.mode {
+        case .lsp:
+            return currentCompletionPrefix().range
+        case .mention:
+            return currentMentionToken()?.range
+        }
+    }
+
+    private func dismissAutosuggestions() {
+        pendingCompletionRequestID = nil
+        completionRequestGeneration &+= 1
+        autosuggestionSession = nil
+        autosuggestionView.isHidden = true
+    }
+
+    private func updateAutosuggestionView() {
+        guard let session = autosuggestionSession else {
+            autosuggestionView.isHidden = true
+            return
+        }
+
+        autosuggestionView.isHidden = false
+        autosuggestionView.update(
+            title: session.mode.title,
+            query: session.mode == .mention ? "@\(session.query)" : session.query,
+            status: session.status,
+            items: session.items.map(\.viewItem),
+            selectedIndex: session.selectedIndex
+        )
+        positionAutosuggestionView()
+    }
+
+    private func positionAutosuggestionView() {
+        guard !autosuggestionView.isHidden else { return }
+
+        let margin: CGFloat = 8
+        let maxWidth = max(containerView.bounds.width - (margin * 2), 260)
+        var size = autosuggestionView.preferredSize
+        size.width = min(size.width, maxWidth)
+        autosuggestionView.setFrameSize(size)
+
+        let anchorRect: NSRect
+        if let cursorRect = editorView.cursorRectInDocument() {
+            anchorRect = editorView.convert(cursorRect, to: containerView)
+        } else {
+            anchorRect = NSRect(x: scrollView.frame.minX + 16, y: scrollView.frame.maxY - 24, width: 1, height: 18)
+        }
+
+        let x = Self.clamped(
+            Int(anchorRect.minX),
+            lowerBound: Int(margin),
+            upperBound: Int(max(containerView.bounds.width - size.width - margin, margin))
+        )
+        let belowY = anchorRect.minY - size.height - 6
+        let aboveY = anchorRect.maxY + 6
+        let y: CGFloat
+        if belowY >= margin {
+            y = belowY
+        } else {
+            y = min(aboveY, max(containerView.bounds.height - size.height - margin, margin))
+        }
+
+        autosuggestionView.frame.origin = NSPoint(x: CGFloat(x), y: y)
+    }
+
+    private func currentMentionToken() -> (range: Range<Int>, query: String)? {
+        let text = snapshot.text
+        let cursorOffset = Self.scalarOffset(for: snapshot.cursor, in: text)
+        let scalars = Array(text.unicodeScalars)
+        guard cursorOffset > 0, cursorOffset <= scalars.count else { return nil }
+
+        var segmentStart = cursorOffset
+        while segmentStart > 0 {
+            let scalar = scalars[segmentStart - 1]
+            if scalar == "\n" || CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                break
+            }
+            segmentStart -= 1
+        }
+
+        var atIndex: Int?
+        var index = cursorOffset
+        while index > segmentStart {
+            index -= 1
+            if scalars[index] == "@" {
+                atIndex = index
+                break
+            }
+        }
+
+        guard let atIndex else { return nil }
+        let queryStart = min(atIndex + 1, cursorOffset)
+        let query = Self.stringBySelectingUnicodeScalars(in: text, range: queryStart..<cursorOffset)
+        return (atIndex..<cursorOffset, query)
+    }
+
+    private func currentCompletionPrefix() -> (range: Range<Int>, query: String) {
+        let text = snapshot.text
+        let cursorOffset = Self.scalarOffset(for: snapshot.cursor, in: text)
+        let scalars = Array(text.unicodeScalars)
+        guard cursorOffset > 0, cursorOffset <= scalars.count else {
+            return (cursorOffset..<cursorOffset, "")
+        }
+
+        var start = cursorOffset
+        while start > 0, Self.isCompletionScalar(scalars[start - 1]) {
+            start -= 1
+        }
+
+        let query = Self.stringBySelectingUnicodeScalars(in: text, range: start..<cursorOffset)
+        return (start..<cursorOffset, query)
+    }
+
+    private func cancelCoreCompletionState() {
+        _ = try? editor.processKey(event: VikerKeyEvent(key: .escape, text: nil, ctrl: false, alt: false))
     }
 
     private func scheduleFormatSaveTimeout(_ requestID: UInt64) {
@@ -2142,6 +2821,7 @@ public final class VikerEditorComponent: NSObject {
         )
         updateSaveButtonTint()
 
+        autosuggestionView.applyTheme(colorScheme: colorScheme)
         editorView.applyTheme(colorScheme: colorScheme, viewportWidth: scrollView.contentView.bounds.width)
         scrollView.drawsBackground = true
         scrollView.backgroundColor = colorScheme.editorBackground
@@ -2297,6 +2977,210 @@ public final class VikerEditorComponent: NSObject {
 
     private static func isWordScalar(_ scalar: UnicodeScalar) -> Bool {
         scalar == "_" || CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private static func isCompletionScalar(_ scalar: UnicodeScalar) -> Bool {
+        scalar == "_" || CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private static func isPlainTextInput(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              let characters = event.characters,
+              !characters.isEmpty else {
+            return false
+        }
+        return event.keyCode != 36 && event.keyCode != 48 && event.keyCode != 51 && event.keyCode != 53
+    }
+
+    private static func isCompletionShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return flags.contains(.control)
+            && !flags.contains(.command)
+            && !flags.contains(.option)
+            && event.keyCode == 49
+    }
+
+    private static func isLspCompletionTriggerText(_ text: String) -> Bool {
+        guard let first = text.unicodeScalars.first else { return false }
+        return isCompletionScalar(first) || first == "." || first == ":"
+    }
+
+    private static func filteredCompletionItems(
+        _ completions: [VikerCompletionItem],
+        query: String
+    ) -> [VikerCompletionItem] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return completions }
+
+        return completions
+            .compactMap { completion -> (VikerCompletionItem, Int)? in
+                let searchable = [completion.label, completion.detail, completion.insertText]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                guard let score = fuzzyScore(searchable, query: trimmedQuery) else { return nil }
+                let startsWithQuery = completion.label.range(
+                    of: trimmedQuery,
+                    options: [.caseInsensitive, .anchored]
+                ) != nil
+                return (completion, score + (startsWithQuery ? 10_000 : 0))
+            }
+            .sorted { lhs, rhs in
+                lhs.1 == rhs.1
+                    ? lhs.0.label.localizedCaseInsensitiveCompare(rhs.0.label) == .orderedAscending
+                    : lhs.1 > rhs.1
+            }
+            .map(\.0)
+    }
+
+    private static func autosuggestionItem(from suggestion: VikerEditorContextSuggestion) -> EditorAutosuggestionItem {
+        EditorAutosuggestionItem(
+            id: suggestion.id,
+            title: suggestion.title,
+            subtitle: suggestion.subtitle,
+            detail: suggestion.detail,
+            badge: suggestion.category,
+            systemImageName: suggestion.systemImageName,
+            replacementText: suggestion.insertText,
+            contextSuggestion: suggestion,
+            action: suggestion.action
+        )
+    }
+
+    private static func fileSuggestionDisplayParts(_ path: String) -> (title: String, subtitle: String?) {
+        let url = URL(fileURLWithPath: path)
+        let title = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
+        let directory = String(path.dropLast(title.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return (title, directory.isEmpty ? nil : directory)
+    }
+
+    private static func fuzzyScore(_ candidate: String, query: String) -> Int? {
+        let queryScalars = Array(query.lowercased().unicodeScalars)
+        guard !queryScalars.isEmpty else { return 0 }
+
+        let candidateScalars = Array(candidate.lowercased().unicodeScalars)
+        var queryIndex = 0
+        var score = 0
+        var previousMatch: Int?
+
+        for (candidateIndex, scalar) in candidateScalars.enumerated() {
+            guard scalar == queryScalars[queryIndex] else { continue }
+
+            score += 100
+            if let previousMatch, candidateIndex == previousMatch + 1 {
+                score += 35
+            }
+            if candidateIndex == 0 || candidateScalars[candidateIndex - 1] == "/" || candidateScalars[candidateIndex - 1] == "_" || candidateScalars[candidateIndex - 1] == "-" {
+                score += 20
+            }
+            score -= min(candidateIndex, 80)
+            previousMatch = candidateIndex
+            queryIndex += 1
+
+            if queryIndex == queryScalars.count {
+                return score
+            }
+        }
+
+        return nil
+    }
+
+    private static func completionKindLabel(_ kind: UInt64) -> String {
+        switch kind {
+        case 2: return "Method"
+        case 3: return "Function"
+        case 4: return "Constructor"
+        case 5: return "Field"
+        case 6: return "Variable"
+        case 7: return "Class"
+        case 8: return "Interface"
+        case 9: return "Module"
+        case 10: return "Property"
+        case 11: return "Unit"
+        case 12: return "Value"
+        case 13: return "Enum"
+        case 14: return "Keyword"
+        case 15: return "Snippet"
+        case 16: return "Color"
+        case 17: return "File"
+        case 18: return "Reference"
+        case 21: return "Constant"
+        case 22: return "Struct"
+        case 23: return "Event"
+        case 24: return "Operator"
+        case 25: return "Type"
+        default: return "Text"
+        }
+    }
+
+    private static func completionKindImageName(_ kind: UInt64) -> String {
+        switch kind {
+        case 2, 3, 4:
+            return "function"
+        case 5, 6, 10, 21:
+            return "curlybraces"
+        case 7, 8, 13, 22, 25:
+            return "shippingbox"
+        case 9:
+            return "square.stack.3d.up"
+        case 14:
+            return "key"
+        case 15:
+            return "text.badge.plus"
+        case 17:
+            return "doc.text"
+        default:
+            return "textformat"
+        }
+    }
+
+    private static func plainTextFromSnippet(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        var output = String.UnicodeScalarView()
+        var index = 0
+
+        while index < scalars.count {
+            let scalar = scalars[index]
+            guard scalar == "$", index + 1 < scalars.count else {
+                output.append(scalar)
+                index += 1
+                continue
+            }
+
+            let next = scalars[index + 1]
+            if CharacterSet.decimalDigits.contains(next) {
+                index += 2
+                continue
+            }
+
+            if next == "{" {
+                var cursor = index + 2
+                while cursor < scalars.count, CharacterSet.decimalDigits.contains(scalars[cursor]) {
+                    cursor += 1
+                }
+                if cursor < scalars.count, scalars[cursor] == ":" {
+                    cursor += 1
+                    while cursor < scalars.count, scalars[cursor] != "}" {
+                        output.append(scalars[cursor])
+                        cursor += 1
+                    }
+                    index = min(cursor + 1, scalars.count)
+                    continue
+                }
+                while cursor < scalars.count, scalars[cursor] != "}" {
+                    cursor += 1
+                }
+                index = min(cursor + 1, scalars.count)
+                continue
+            }
+
+            output.append(scalar)
+            index += 1
+        }
+
+        return String(output)
     }
 
     private static func precedesPosition(_ lhs: VikerPosition, _ rhs: VikerPosition) -> Bool {
@@ -2631,6 +3515,58 @@ private struct EditorTransientSelectionDrag {
     var copies: Bool
 }
 
+private enum EditorAutosuggestionMode {
+    case lsp
+    case mention
+
+    var title: String {
+        switch self {
+        case .lsp:
+            return "Code Suggestions"
+        case .mention:
+            return "Add Context"
+        }
+    }
+}
+
+private struct EditorAutosuggestionItem {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let detail: String?
+    let badge: String?
+    let systemImageName: String?
+    let replacementText: String?
+    let contextSuggestion: VikerEditorContextSuggestion?
+    let action: (() -> Void)?
+
+    var viewItem: EditorAutosuggestionViewItem {
+        EditorAutosuggestionViewItem(
+            id: id,
+            title: title,
+            subtitle: subtitle,
+            detail: detail,
+            badge: badge,
+            systemImageName: systemImageName,
+            isEnabled: true
+        )
+    }
+}
+
+private struct EditorAutosuggestionSession {
+    let mode: EditorAutosuggestionMode
+    let query: String
+    let replacementRange: Range<Int>
+    var items: [EditorAutosuggestionItem]
+    var selectedIndex: Int
+    let status: String?
+
+    var selectedItem: EditorAutosuggestionItem? {
+        guard items.indices.contains(selectedIndex) else { return nil }
+        return items[selectedIndex]
+    }
+}
+
 private struct EditorRenderSelection {
     let anchor: VikerViewCell
     let cursor: VikerViewCell
@@ -2750,6 +3686,18 @@ private final class VikerEditorCanvasView: NSView {
         let width = max(Int(floor(textWidth / charWidth)), 1)
         let height = max(Int(floor(textHeight / lineHeight)), 1)
         return (UInt64(width), UInt64(height))
+    }
+
+    func cursorRectInDocument() -> NSRect? {
+        guard let cursor = renderState.cursorViewCell else { return nil }
+        let row = Self.clamped(Self.intClamped(cursor.row), lowerBound: 0, upperBound: renderState.rowCount - 1)
+        let column = max(Self.intClamped(cursor.column), 0)
+        return NSRect(
+            x: textOriginX + CGFloat(column) * charWidth,
+            y: verticalInset + CGFloat(row) * lineHeight,
+            width: max(charWidth, 1),
+            height: lineHeight
+        )
     }
 
     func updateDocumentSize(viewportWidth: CGFloat) {
@@ -3469,8 +4417,31 @@ final class VikerEditorLspWorkspaceSession: NSObject {
         return request
     }
 
+    func requestCompletion(
+        editor: VikerEditor,
+        row: UInt64,
+        column: UInt64,
+        owner: VikerEditorComponent
+    ) throws -> VikerLspRequest {
+        let request = try workspace.requestCompletion(editor: editor, row: row, column: column)
+        if let requestID = request.id {
+            pendingOwnerByRequestID[requestID] = WeakVikerEditorComponent(owner)
+        }
+        ensurePolling()
+        pollSoon()
+        return request
+    }
+
+    func completionItems(requestID: UInt64) throws -> [VikerCompletionItem] {
+        try workspace.completionItems(requestId: requestID)
+    }
+
     func workspaceSymbols(requestID: UInt64) throws -> [VikerWorkspaceSymbol] {
         try workspace.workspaceSymbols(requestId: requestID)
+    }
+
+    func searchFiles(query: String, limit: UInt64) throws -> [VikerFileSearchResult] {
+        try workspace.searchFiles(query: query, limit: limit)
     }
 
     func serverInfo(for language: VikerSyntaxLanguage) throws -> VikerLspServerInfo? {
