@@ -74,8 +74,8 @@ Add `.product(name: "VikerKit", package: "VikerKit")` to the consuming target's
 dependencies.
 
 Remote SwiftPM consumers download `VikerKitFFI.xcframework` from the matching
-GitHub release asset. The checked-in `swift/VikerKit` package still keeps a
-local `VikerKitFFI.xcframework` for development and the example app.
+GitHub release asset. The `swift/VikerKit` package can generate a local
+`VikerKitFFI.xcframework` for development and the example app.
 
 For a new release, rebuild the xcframework, zip it, compute its SwiftPM
 checksum, and update the workspace version:
