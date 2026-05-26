@@ -105,23 +105,19 @@ pub struct HighlightSpan {
 }
 
 fn clipboard_get() -> Option<String> {
-    std::process::Command::new("pbpaste")
-        .output()
+    use clipboard_rs::{Clipboard, ClipboardContext};
+
+    ClipboardContext::new()
         .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|clipboard| clipboard.get_text().ok())
         .filter(|s| !s.is_empty())
 }
 
 fn clipboard_set(content: &str) {
-    use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(ref mut stdin) = child.stdin {
-            let _ = stdin.write_all(content.as_bytes());
-        }
-        let _ = child.wait();
+    use clipboard_rs::{Clipboard, ClipboardContext};
+
+    if let Ok(clipboard) = ClipboardContext::new() {
+        let _ = clipboard.set_text(content.to_owned());
     }
 }
 
