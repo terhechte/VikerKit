@@ -77,6 +77,15 @@ The checked-in `VikerKitFFI.xcframework` static libraries are tracked with Git
 LFS. Consumers resolving the package from Git need Git LFS enabled so SwiftPM
 receives the real binary files rather than LFS pointer files.
 
+For a new release, update the workspace version and SwiftPM README snippet with:
+
+```bash
+scripts/set-viker-version.sh 0.2.0
+```
+
+SwiftPM resolves package versions from Git tags, so after rebuilding `VikerKit`
+and committing the release changes, tag the release as `v0.2.0`.
+
 On macOS, `VikerKit` includes `VikerEditorComponent`, a reusable AppKit editor
 view around the Viker core. Initialize it with `VikerEditorConfiguration` to
 choose the color scheme, status bar visibility, top toolbar items, LSP loading,
