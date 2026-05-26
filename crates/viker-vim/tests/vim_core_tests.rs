@@ -42,6 +42,12 @@ fn type_keys(vim: &mut VimCore, input: &str) -> Vec<Effect> {
     effects
 }
 
+fn run_command(vim: &mut VimCore, command: &str) -> Vec<Effect> {
+    vim.process_key(ch(':'));
+    type_keys(vim, command);
+    vim.process_key(key(KeyCode::Enter))
+}
+
 #[test]
 fn vim_core_processes_insert_keys_without_editor() {
     let mut vim = VimCore::from_text("hello\n");
@@ -387,6 +393,40 @@ fn vim_core_zz_centers_the_viewport() {
 }
 
 #[test]
+fn vim_core_supports_missing_cursor_scroll_and_lsp_bindings() {
+    let mut vim = VimCore::from_text("one   \n");
+    type_keys(&mut vim, "g_");
+    assert_eq!(vim.cursor.col, 2);
+
+    let mut vim = VimCore::from_text("abcdef\n");
+    vim.config.wrap = true;
+    vim.view.wrap = true;
+    vim.view.width = 6;
+    vim.view.height = 5;
+    type_keys(&mut vim, "gj");
+    assert_eq!(vim.cursor.col, 3);
+    type_keys(&mut vim, "gk");
+    assert_eq!(vim.cursor.col, 0);
+
+    let text = (1..=20)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    let mut vim = VimCore::from_text(&text);
+    vim.config.scroll_off = 0;
+    vim.view.width = 80;
+    vim.view.height = 5;
+    vim.cursor.row = 2;
+    vim.process_key(ctrl('e'));
+    assert_eq!(vim.view.offset_row, 1);
+    vim.process_key(ctrl('y'));
+    assert_eq!(vim.view.offset_row, 0);
+
+    let mut vim = VimCore::from_text("symbol\n");
+    assert_eq!(type_keys(&mut vim, "gD"), vec![Effect::GotoDefinition]);
+    assert_eq!(vim.process_key(ctrl(']')), vec![Effect::GotoDefinition]);
+}
+
+#[test]
 fn vim_core_counts_repeat_paste_and_macro_effects() {
     let mut vim = VimCore::from_text("one\ntwo\n");
 
@@ -485,6 +525,118 @@ fn vim_core_nohlsearch_and_diagnostics_commands_work() {
 }
 
 #[test]
+fn vim_core_supports_join_paste_insert_register_and_visual_ctrl_c() {
+    let mut vim = VimCore::from_text("one\ntwo\n");
+    type_keys(&mut vim, "gJ");
+    assert_eq!(vim.text(), "onetwo\n");
+
+    let mut vim = VimCore::from_text("abc\n");
+    vim.store_register('"', "xy".to_string(), false);
+    type_keys(&mut vim, "lgp");
+    assert_eq!(vim.text(), "abxyc\n");
+    assert_eq!(vim.cursor.col, 4);
+
+    let mut vim = VimCore::from_text("abc\n");
+    vim.store_register('"', "xy".to_string(), false);
+    type_keys(&mut vim, "lgP");
+    assert_eq!(vim.text(), "axybc\n");
+    assert_eq!(vim.cursor.col, 3);
+
+    let mut vim = VimCore::from_text("base\n");
+    vim.store_register('a', "X".to_string(), false);
+    vim.process_key(ch('i'));
+    vim.process_key(ctrl('r'));
+    vim.process_key(ch('a'));
+    vim.process_key(key(KeyCode::Esc));
+    assert_eq!(vim.text(), "Xbase\n");
+
+    let mut vim = VimCore::from_text("abc\n");
+    vim.process_key(ch('i'));
+    vim.process_key(ctrl('o'));
+    vim.process_key(ch('x'));
+    assert_eq!(vim.mode, Mode::Insert);
+    assert_eq!(vim.text(), "bc\n");
+    vim.process_key(ch('Z'));
+    vim.process_key(key(KeyCode::Esc));
+    assert_eq!(vim.text(), "Zbc\n");
+
+    let mut vim = VimCore::from_text("abc\n");
+    vim.process_key(ch('v'));
+    vim.process_key(ctrl('c'));
+    assert_eq!(vim.mode, Mode::Normal);
+}
+
+#[test]
+fn vim_core_supports_operator_mark_motions() {
+    let mut vim = VimCore::from_text("abcdef\n");
+
+    type_keys(&mut vim, "llma0y`a");
+
+    assert_eq!(vim.registers.get(&'0').unwrap().content, "ab");
+    assert_eq!(vim.registers.get(&'"').unwrap().content, "ab");
+}
+
+#[test]
+fn vim_core_supports_delete_range_and_global_commands() {
+    let mut vim = VimCore::from_text("one\ntwo\nthree\nfour\nfive\nsix\n");
+    run_command(&mut vim, "3,5d");
+    assert_eq!(vim.text(), "one\ntwo\nsix\n");
+
+    let mut vim = VimCore::from_text("one\ntwo\nthree\nfour\n");
+    vim.cursor.row = 1;
+    run_command(&mut vim, ".,$d");
+    assert_eq!(vim.text(), "one\n");
+
+    let mut vim = VimCore::from_text("one\ntwo\nthree\nfour\n");
+    vim.cursor.row = 2;
+    run_command(&mut vim, ".,1d");
+    assert_eq!(vim.text(), "four\n");
+
+    let text = (1..=10)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    let mut vim = VimCore::from_text(&text);
+    run_command(&mut vim, "10,1d");
+    assert_eq!(vim.text(), "\n");
+
+    let mut vim = VimCore::from_text("keep\ndrop\nkeep two\ndrop two\n");
+    run_command(&mut vim, "g/drop/d");
+    assert_eq!(vim.text(), "keep\nkeep two\n");
+
+    let mut vim = VimCore::from_text("keep\ndrop\nkeep two\n");
+    run_command(&mut vim, "g!/keep/d");
+    assert_eq!(vim.text(), "keep\nkeep two\n");
+}
+
+#[test]
+fn vim_core_reports_marks_jumps_and_changes() {
+    let mut vim = VimCore::from_text("one\ntwo\nthree\n");
+    type_keys(&mut vim, "ma");
+    run_command(&mut vim, "marks");
+    assert_eq!(vim.status_message.as_deref(), Some("Marks: 'a"));
+
+    type_keys(&mut vim, "G");
+    run_command(&mut vim, "jumps");
+    assert_eq!(vim.status_message.as_deref(), Some("1 jump(s)"));
+
+    let mut vim = VimCore::from_text("abc\n");
+    type_keys(&mut vim, "x");
+    run_command(&mut vim, "changes");
+    assert_eq!(vim.status_message.as_deref(), Some("1 change(s)"));
+}
+
+#[test]
+fn vim_core_supports_very_magic_search_prefix() {
+    let mut vim = VimCore::from_text("bar\nfoo123\nfooabc\n");
+
+    type_keys(&mut vim, "/\\vfoo\\d+");
+    vim.process_key(key(KeyCode::Enter));
+
+    assert_eq!((vim.cursor.row, vim.cursor.col), (1, 0));
+    assert_eq!(vim.search_matches.len(), 1);
+}
+
+#[test]
 fn vim_core_replace_mode_replaces_successive_chars() {
     let mut vim = VimCore::from_text("abcdef\n");
 
@@ -560,6 +712,27 @@ fn vim_core_register_prompt_lists_text_register_contents() {
     assert!(display.contains("\"0:two\\n"));
     assert!(display.contains("\"a:one\\n"));
     assert!(display.contains("\"\":two\\n"));
+}
+
+#[test]
+fn vim_core_reads_special_registers() {
+    let mut vim = VimCore::from_text("\n");
+    vim.search_query = "needle".to_string();
+    vim.command_history.push("write".to_string());
+    vim.set_clipboard_content("clip");
+
+    vim.process_key(ch('i'));
+    vim.process_key(ctrl('r'));
+    vim.process_key(ch('/'));
+    vim.process_key(key(KeyCode::Esc));
+
+    assert_eq!(vim.text(), "needle\n");
+    assert_eq!(vim.read_register('%').unwrap().content, "[No Name]");
+    assert_eq!(vim.read_register(':').unwrap().content, "write");
+    assert_eq!(vim.read_register('+').unwrap().content, "clip");
+    assert_eq!(vim.read_register('*').unwrap().content, "clip");
+    assert_eq!(vim.read_register('#').unwrap().content, "");
+    assert_eq!(vim.read_register('=').unwrap().content, "");
 }
 
 #[test]

@@ -91,7 +91,7 @@ pub fn map_key<S: KeymapState + ?Sized>(
 
     match editor.mode() {
         Mode::Normal => map_normal(editor, key),
-        Mode::Insert => map_insert(editor, key).map(CommandInvocation::once),
+        Mode::Insert => map_insert(editor, key),
         Mode::Replace => map_replace(key).map(CommandInvocation::once),
         Mode::Visual | Mode::VisualLine | Mode::VisualBlock => map_visual(editor, key),
         Mode::Command => map_command(key).map(CommandInvocation::once),
@@ -155,7 +155,9 @@ fn map_normal<S: KeymapState + ?Sized>(editor: &mut S, key: KeyInput) -> Option<
     if key.ctrl {
         match key.code {
             KeyCode::Char('d') => return inv(editor, Command::HalfPageDown),
+            KeyCode::Char('e') => return inv(editor, Command::ScrollViewportDown),
             KeyCode::Char('u') => return inv(editor, Command::HalfPageUp),
+            KeyCode::Char('y') => return inv(editor, Command::ScrollViewportUp),
             KeyCode::Char('f') => return inv(editor, Command::FullPageDown),
             KeyCode::Char('b') => return inv(editor, Command::FullPageUp),
             KeyCode::Char('r') => return inv(editor, Command::Redo),
@@ -166,6 +168,7 @@ fn map_normal<S: KeymapState + ?Sized>(editor: &mut S, key: KeyInput) -> Option<
             KeyCode::Char('a') => return inv(editor, Command::IncrementNumber),
             KeyCode::Char('x') => return inv(editor, Command::DecrementNumber),
             KeyCode::Char('v') => return inv(editor, Command::EnterVisualBlockMode),
+            KeyCode::Char(']') => return inv(editor, Command::GotoDefinition),
             KeyCode::Char('w') => {
                 start_pending(editor, 'W'); // uppercase to avoid collision
                 return None;
@@ -467,7 +470,7 @@ fn handle_pending<S: KeymapState + ?Sized>(
             '|' => pending_inv(editor, Command::DeleteMotion(Motion::Column)),
             '+' => pending_inv(editor, Command::DeleteMotion(Motion::LineDownFirstNonBlank)),
             '-' => pending_inv(editor, Command::DeleteMotion(Motion::LineUpFirstNonBlank)),
-            'i' | 'a' | 'f' | 'F' | 't' | 'T' | 'g' | '[' | ']' => {
+            'i' | 'a' | 'f' | 'F' | 't' | 'T' | 'g' | '[' | ']' | '\'' | '`' => {
                 editor.push_pending_key('d');
                 editor.push_pending_key(ch);
                 None
@@ -486,6 +489,20 @@ fn handle_pending<S: KeymapState + ?Sized>(
         ['d', 'F'] => pending_inv(editor, Command::DeleteMotion(Motion::FindBackward(ch))),
         ['d', 't'] => pending_inv(editor, Command::DeleteMotion(Motion::TillForward(ch))),
         ['d', 'T'] => pending_inv(editor, Command::DeleteMotion(Motion::TillBackward(ch))),
+        ['d', '\''] => pending_inv(
+            editor,
+            Command::DeleteMotion(Motion::Mark {
+                mark: ch,
+                exact: false,
+            }),
+        ),
+        ['d', '`'] => pending_inv(
+            editor,
+            Command::DeleteMotion(Motion::Mark {
+                mark: ch,
+                exact: true,
+            }),
+        ),
         ['d', ']'] => match ch {
             ']' | '[' => pending_inv(editor, Command::DeleteMotion(Motion::SectionForward)),
             _ => None,
@@ -517,7 +534,7 @@ fn handle_pending<S: KeymapState + ?Sized>(
             '|' => pending_inv(editor, Command::ChangeMotion(Motion::Column)),
             '+' => pending_inv(editor, Command::ChangeMotion(Motion::LineDownFirstNonBlank)),
             '-' => pending_inv(editor, Command::ChangeMotion(Motion::LineUpFirstNonBlank)),
-            'i' | 'a' | 'f' | 'F' | 't' | 'T' | 'g' | '[' | ']' => {
+            'i' | 'a' | 'f' | 'F' | 't' | 'T' | 'g' | '[' | ']' | '\'' | '`' => {
                 editor.push_pending_key('c');
                 editor.push_pending_key(ch);
                 None
@@ -536,6 +553,20 @@ fn handle_pending<S: KeymapState + ?Sized>(
         ['c', 'F'] => pending_inv(editor, Command::ChangeMotion(Motion::FindBackward(ch))),
         ['c', 't'] => pending_inv(editor, Command::ChangeMotion(Motion::TillForward(ch))),
         ['c', 'T'] => pending_inv(editor, Command::ChangeMotion(Motion::TillBackward(ch))),
+        ['c', '\''] => pending_inv(
+            editor,
+            Command::ChangeMotion(Motion::Mark {
+                mark: ch,
+                exact: false,
+            }),
+        ),
+        ['c', '`'] => pending_inv(
+            editor,
+            Command::ChangeMotion(Motion::Mark {
+                mark: ch,
+                exact: true,
+            }),
+        ),
         ['c', ']'] => match ch {
             ']' | '[' => pending_inv(editor, Command::ChangeMotion(Motion::SectionForward)),
             _ => None,
@@ -567,7 +598,7 @@ fn handle_pending<S: KeymapState + ?Sized>(
             '|' => pending_inv(editor, Command::YankMotion(Motion::Column)),
             '+' => pending_inv(editor, Command::YankMotion(Motion::LineDownFirstNonBlank)),
             '-' => pending_inv(editor, Command::YankMotion(Motion::LineUpFirstNonBlank)),
-            'i' | 'a' | 'g' | '[' | ']' => {
+            'i' | 'a' | 'g' | '[' | ']' | '\'' | '`' => {
                 editor.push_pending_key('y');
                 editor.push_pending_key(ch);
                 None
@@ -582,6 +613,20 @@ fn handle_pending<S: KeymapState + ?Sized>(
         },
         ['y', 'i'] => pending_inv(editor, Command::YankMotion(Motion::Inner(ch))),
         ['y', 'a'] => pending_inv(editor, Command::YankMotion(Motion::Around(ch))),
+        ['y', '\''] => pending_inv(
+            editor,
+            Command::YankMotion(Motion::Mark {
+                mark: ch,
+                exact: false,
+            }),
+        ),
+        ['y', '`'] => pending_inv(
+            editor,
+            Command::YankMotion(Motion::Mark {
+                mark: ch,
+                exact: true,
+            }),
+        ),
         ['y', ']'] => match ch {
             ']' | '[' => pending_inv(editor, Command::YankMotion(Motion::SectionForward)),
             _ => None,
@@ -594,15 +639,20 @@ fn handle_pending<S: KeymapState + ?Sized>(
         // --- g-prefix ---
         ['g'] => match ch {
             'd' => pending_inv(editor, Command::GotoDefinition),
+            'D' => pending_inv(editor, Command::GotoDefinition),
             'r' => pending_inv(editor, Command::FindReferences),
             'g' => pending_inv(editor, Command::GotoTop),
             'e' => pending_inv(editor, Command::MoveWordEndBackward),
             'E' => pending_inv(editor, Command::MoveWORDEndBackward),
+            '_' => pending_inv(editor, Command::MoveLastNonBlank),
+            'J' => pending_inv(editor, Command::JoinLinesNoSpace),
+            'p' => pending_inv(editor, Command::PasteAfterLeaveAfter),
+            'P' => pending_inv(editor, Command::PasteBeforeLeaveAfter),
             'a' => pending_inv(editor, Command::CodeAction),
             't' => pending_inv(editor, Command::NextBuffer),
             'T' => pending_inv(editor, Command::PrevBuffer),
-            'j' => pending_inv(editor, Command::MoveDocumentLineDown),
-            'k' => pending_inv(editor, Command::MoveDocumentLineUp),
+            'j' => pending_inv(editor, Command::MoveDown),
+            'k' => pending_inv(editor, Command::MoveUp),
             'v' => pending_inv(editor, Command::RestoreVisualSelection),
             // Case change: gu/gU/g~ + motion
             'u' | 'U' | '~' => {
@@ -663,6 +713,9 @@ fn handle_pending<S: KeymapState + ?Sized>(
         ['>'] => match ch {
             '>' => pending_inv(editor, Command::IndentLine),
             'w' => pending_inv(editor, Command::IndentMotion(Motion::WordForward)),
+            '%' => pending_inv(editor, Command::IndentMotion(Motion::MatchBracket)),
+            '$' => pending_inv(editor, Command::IndentMotion(Motion::LineEnd)),
+            'G' => pending_inv(editor, Command::IndentMotion(Motion::DocumentEnd)),
             '}' => pending_inv(editor, Command::IndentMotion(Motion::ParagraphForward)),
             'i' | 'a' => {
                 editor.push_pending_key('>');
@@ -676,6 +729,9 @@ fn handle_pending<S: KeymapState + ?Sized>(
         ['<'] => match ch {
             '<' => pending_inv(editor, Command::DedentLine),
             'w' => pending_inv(editor, Command::DedentMotion(Motion::WordForward)),
+            '%' => pending_inv(editor, Command::DedentMotion(Motion::MatchBracket)),
+            '$' => pending_inv(editor, Command::DedentMotion(Motion::LineEnd)),
+            'G' => pending_inv(editor, Command::DedentMotion(Motion::DocumentEnd)),
             '}' => pending_inv(editor, Command::DedentMotion(Motion::ParagraphForward)),
             'i' | 'a' => {
                 editor.push_pending_key('<');
@@ -689,6 +745,9 @@ fn handle_pending<S: KeymapState + ?Sized>(
         ['='] => match ch {
             '=' => pending_inv(editor, Command::FormatMotion(Motion::Line)),
             'w' => pending_inv(editor, Command::FormatMotion(Motion::WordForward)),
+            '%' => pending_inv(editor, Command::FormatMotion(Motion::MatchBracket)),
+            '$' => pending_inv(editor, Command::FormatMotion(Motion::LineEnd)),
+            'G' => pending_inv(editor, Command::FormatMotion(Motion::DocumentEnd)),
             '}' => pending_inv(editor, Command::FormatMotion(Motion::ParagraphForward)),
             'i' | 'a' => {
                 editor.push_pending_key('=');
@@ -702,6 +761,9 @@ fn handle_pending<S: KeymapState + ?Sized>(
         ['!'] => match ch {
             '!' => pending_inv(editor, Command::FilterMotion(Motion::Line)),
             'w' => pending_inv(editor, Command::FilterMotion(Motion::WordForward)),
+            '%' => pending_inv(editor, Command::FilterMotion(Motion::MatchBracket)),
+            '$' => pending_inv(editor, Command::FilterMotion(Motion::LineEnd)),
+            'G' => pending_inv(editor, Command::FilterMotion(Motion::DocumentEnd)),
             '}' => pending_inv(editor, Command::FilterMotion(Motion::ParagraphForward)),
             'i' | 'a' => {
                 editor.push_pending_key('!');
@@ -727,6 +789,7 @@ fn handle_pending<S: KeymapState + ?Sized>(
             'd' => pending_inv(editor, Command::DiagnosticNext),
             'D' => pending_inv(editor, Command::DiagnosticList),
             ']' | '[' => pending_inv(editor, Command::MoveSectionForward),
+            'p' => pending_inv(editor, Command::PasteAfter),
             _ => None,
         },
         ['['] => match ch {
@@ -878,6 +941,7 @@ fn map_visual_command(key: KeyInput) -> Option<Command> {
             KeyCode::Char('f') => return Some(Command::FullPageDown),
             KeyCode::Char('b') => return Some(Command::FullPageUp),
             KeyCode::Char('v') => return Some(Command::EnterVisualBlockMode),
+            KeyCode::Char('c') => return Some(Command::ExitToNormalMode),
             _ => return None,
         }
     }
@@ -925,21 +989,29 @@ fn map_visual_command(key: KeyInput) -> Option<Command> {
     }
 }
 
-fn map_insert<S: KeymapState + ?Sized>(editor: &S, key: KeyInput) -> Option<Command> {
+fn map_insert<S: KeymapState + ?Sized>(editor: &mut S, key: KeyInput) -> Option<CommandInvocation> {
+    if !editor.pending_keys().is_empty() {
+        return handle_insert_pending(editor, key);
+    }
+
     // When completion popup is showing, intercept navigation keys
     if editor.showing_completion() {
         match key.code {
-            KeyCode::Down | KeyCode::Tab => return Some(Command::CompletionNext),
-            KeyCode::Up | KeyCode::BackTab => return Some(Command::CompletionPrev),
-            KeyCode::Enter => return Some(Command::AcceptCompletion),
-            KeyCode::Esc => return Some(Command::CancelCompletion),
+            KeyCode::Down | KeyCode::Tab => {
+                return Some(CommandInvocation::once(Command::CompletionNext));
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                return Some(CommandInvocation::once(Command::CompletionPrev));
+            }
+            KeyCode::Enter => return Some(CommandInvocation::once(Command::AcceptCompletion)),
+            KeyCode::Esc => return Some(CommandInvocation::once(Command::CancelCompletion)),
             _ => {
                 // Any other key dismisses completion and falls through
             }
         }
     }
 
-    match key.code {
+    let command = match key.code {
         KeyCode::Esc => Some(Command::ExitToNormalMode),
         KeyCode::Backspace => Some(Command::DeleteCharBackward),
         KeyCode::Enter => Some(Command::InsertNewline),
@@ -957,12 +1029,74 @@ fn map_insert<S: KeymapState + ?Sized>(editor: &S, key: KeyInput) -> Option<Comm
         KeyCode::Char('b') if key.alt => Some(Command::MoveWordBackward),
         KeyCode::Char('w') if key.ctrl => Some(Command::DeleteWordBackward),
         KeyCode::Char('u') if key.ctrl => Some(Command::DeleteLineBackward),
+        KeyCode::Char('o') if key.ctrl => {
+            editor.push_pending_key('O');
+            return None;
+        }
+        KeyCode::Char('r') if key.ctrl => {
+            editor.push_pending_key('R');
+            return None;
+        }
         // Ctrl-Space to trigger completion
         KeyCode::Char(' ') if key.ctrl => Some(Command::TriggerCompletion),
         KeyCode::Char(ch) => Some(Command::InsertChar(ch)),
         KeyCode::Tab => Some(Command::InsertTab),
         _ => None,
+    };
+    command.map(CommandInvocation::once)
+}
+
+fn handle_insert_pending<S: KeymapState + ?Sized>(
+    editor: &mut S,
+    key: KeyInput,
+) -> Option<CommandInvocation> {
+    let pending = editor.pending_keys().to_vec();
+    if pending.first() == Some(&'O') {
+        return handle_insert_normal_pending(editor, key, &pending[1..]);
     }
+
+    if key.code == KeyCode::Esc {
+        editor.clear_pending_keys();
+        return Some(CommandInvocation::once(Command::ExitToNormalMode));
+    }
+    let ch = match key.code {
+        KeyCode::Char(ch) => ch,
+        _ => {
+            editor.clear_pending_keys();
+            return None;
+        }
+    };
+    editor.clear_pending_keys();
+    match *pending.as_slice() {
+        ['R'] => Some(CommandInvocation::once(Command::InsertRegister(ch))),
+        _ => None,
+    }
+}
+
+fn handle_insert_normal_pending<S: KeymapState + ?Sized>(
+    editor: &mut S,
+    key: KeyInput,
+    normal_pending: &[char],
+) -> Option<CommandInvocation> {
+    editor.clear_pending_keys();
+    for ch in normal_pending {
+        editor.push_pending_key(*ch);
+    }
+
+    let invocation = map_normal(editor, key);
+    if invocation.is_none()
+        && (!editor.pending_keys().is_empty()
+            || editor.count_prefix().is_some()
+            || editor.pending_operator_count().is_some())
+    {
+        let pending = editor.pending_keys().to_vec();
+        editor.clear_pending_keys();
+        editor.push_pending_key('O');
+        for ch in pending {
+            editor.push_pending_key(ch);
+        }
+    }
+    invocation
 }
 
 fn map_replace(key: KeyInput) -> Option<Command> {

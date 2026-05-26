@@ -1060,6 +1060,19 @@ impl Editor {
         self.cursor.col = col;
     }
 
+    pub fn move_last_non_blank(&mut self) {
+        let line = self.document.rope.line(self.cursor.row);
+        let line_len = buffer::line_display_len(line);
+        for col in (0..line_len).rev() {
+            let ch = line.char(col);
+            if !ch.is_whitespace() || ch == '\n' {
+                self.cursor.col = col;
+                return;
+            }
+        }
+        self.cursor.col = 0;
+    }
+
     // --- I (insert at first non-blank) ---
 
     pub fn enter_insert_mode_first_non_blank(&mut self) {
@@ -1420,6 +1433,25 @@ impl Editor {
         if let Some(close) = closing {
             self.document.insert_char(self.cursor, close);
             // cursor stays between the pair
+        }
+    }
+
+    pub fn insert_register(&mut self, name: char) {
+        let Some(reg) = self.read_register(name) else {
+            self.status_message = Some(format!("register \"{} is empty", name));
+            return;
+        };
+        if reg.content.is_empty() {
+            self.status_message = Some(format!("register \"{} is empty", name));
+            return;
+        }
+        let idx = self.document.rope.line_to_char(self.cursor.row) + self.cursor.col;
+        self.document.rope.insert(idx, &reg.content);
+        self.document.modified = true;
+        self.document.bump_version();
+        let inserted = reg.content.chars().count();
+        if inserted > 0 {
+            self.cursor.col += inserted;
         }
     }
 
@@ -2427,6 +2459,7 @@ impl Editor {
             Motion::FindBackward(ch) => self.find_char_backward(*ch),
             Motion::TillForward(ch) => self.till_char_forward(*ch),
             Motion::TillBackward(ch) => self.till_char_backward(*ch),
+            Motion::Mark { mark, exact } => self.goto_mark(*mark, *exact),
             Motion::Inner(_) | Motion::Around(_) => return None,
         }
         Some(())
@@ -2537,6 +2570,25 @@ impl Editor {
                     }
                 }
                 None
+            }
+            Motion::Mark { mark, exact } => {
+                let mut target = self.marks.get(mark).copied()?;
+                if !exact {
+                    let saved = self.cursor;
+                    self.cursor = target;
+                    self.cursor.col = 0;
+                    self.move_first_non_blank();
+                    target = self.cursor;
+                    self.cursor = saved;
+                }
+                let target_idx = self.document.rope.line_to_char(target.row) + target.col;
+                if target_idx < cursor_idx {
+                    Some((target_idx, cursor_idx))
+                } else if target_idx > cursor_idx {
+                    Some((cursor_idx, target_idx))
+                } else {
+                    None
+                }
             }
             Motion::FirstNonBlank => {
                 let saved = self.cursor;
@@ -3085,6 +3137,14 @@ impl Editor {
     // --- Join lines ---
 
     pub fn join_lines(&mut self) {
+        self.join_lines_with_separator(true);
+    }
+
+    pub fn join_lines_no_space(&mut self) {
+        self.join_lines_with_separator(false);
+    }
+
+    fn join_lines_with_separator(&mut self, insert_space: bool) {
         if self.cursor.row + 1 >= self.document.line_count() {
             return;
         }
@@ -3104,7 +3164,7 @@ impl Editor {
         if newline_idx < remove_end {
             self.document.rope.remove(newline_idx..remove_end);
             // Insert a space to separate
-            if newline_idx < self.document.rope.len_chars() {
+            if insert_space && newline_idx < self.document.rope.len_chars() {
                 self.document.rope.insert_char(newline_idx, ' ');
             }
             self.document.modified = true;
@@ -3270,6 +3330,16 @@ impl Editor {
         if reg_name != '"' {
             self.status_message = Some(format!("pasted from register \"{}", reg_name));
         }
+    }
+
+    pub fn paste_after_leave_after(&mut self) {
+        self.paste_after();
+        self.move_right();
+    }
+
+    pub fn paste_before_leave_after(&mut self) {
+        self.paste_before();
+        self.move_right();
     }
 
     // --- Mode changes ---
@@ -3801,6 +3871,7 @@ impl Editor {
         if pattern.is_empty() {
             return None;
         }
+        let pattern = pattern.strip_prefix("\\v").unwrap_or(pattern);
 
         // Determine case sensitivity: explicit > smart case (all-lowercase = insensitive)
         let case_sensitive = match force_case {
@@ -3909,9 +3980,12 @@ impl Editor {
                 Command::IndentLine => self.indent_line(),
                 Command::DedentLine => self.dedent_line(),
                 Command::JoinLines => self.join_lines(),
+                Command::JoinLinesNoSpace => self.join_lines_no_space(),
                 Command::ReplaceChar(ch) => self.replace_char(ch),
                 Command::PasteAfter => self.paste_after(),
                 Command::PasteBefore => self.paste_before(),
+                Command::PasteAfterLeaveAfter => self.paste_after_leave_after(),
+                Command::PasteBeforeLeaveAfter => self.paste_before_leave_after(),
                 _ => {}
             },
             LastChange::InsertSession { entry_cmd, chars } => {
@@ -4581,6 +4655,49 @@ impl Editor {
 
     /// Read from a register.
     pub fn read_register(&mut self, name: char) -> Option<Register> {
+        match name {
+            '%' => {
+                let content = self
+                    .document
+                    .path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| self.document.file_name().to_string());
+                return Some(Register {
+                    content,
+                    linewise: false,
+                });
+            }
+            '/' => {
+                return Some(Register {
+                    content: self.search_query.clone(),
+                    linewise: false,
+                });
+            }
+            ':' => {
+                return Some(Register {
+                    content: self.command_history.last().cloned().unwrap_or_default(),
+                    linewise: false,
+                });
+            }
+            '.' => {
+                let content = match &self.last_change {
+                    Some(LastChange::InsertSession { chars, .. }) => chars.iter().collect(),
+                    _ => String::new(),
+                };
+                return Some(Register {
+                    content,
+                    linewise: false,
+                });
+            }
+            '#' | '=' => {
+                return Some(Register {
+                    content: String::new(),
+                    linewise: false,
+                });
+            }
+            _ => {}
+        }
         // System clipboard
         if (name == '+' || name == '*')
             && let Some(text) = clipboard_get()
@@ -5362,6 +5479,10 @@ impl Editor {
             return self.execute_substitute(trimmed);
         }
 
+        if self.execute_delete_command(trimmed) {
+            return None;
+        }
+
         // Handle `:split <file>` and `:vsplit <file>`
         if let Some(path) = trimmed
             .strip_prefix("split ")
@@ -5426,6 +5547,30 @@ impl Editor {
                     "No registers".to_string()
                 } else {
                     format!("Registers: {summary}")
+                });
+            }
+            "marks" => {
+                let mut names: Vec<char> = self.marks.keys().copied().collect();
+                names.sort_unstable();
+                let summary = names
+                    .into_iter()
+                    .map(|name| format!("'{name}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.status_message = Some(if summary.is_empty() {
+                    "No marks".to_string()
+                } else {
+                    format!("Marks: {summary}")
+                });
+            }
+            "jumps" | "ju" => {
+                self.status_message = Some(format!("{} jump(s)", self.jump_list.len()));
+            }
+            "changes" => {
+                self.status_message = Some(if self.last_change.is_some() {
+                    "1 change(s)".to_string()
+                } else {
+                    "No changes".to_string()
                 });
             }
             "w" => match self.document.save() {
@@ -5572,6 +5717,93 @@ impl Editor {
             }
         }
         None
+    }
+
+    fn content_line_count(&self) -> usize {
+        let line_count = self.document.line_count();
+        if line_count > 1
+            && self.document.rope.len_chars() > 0
+            && self.document.rope.char(self.document.rope.len_chars() - 1) == '\n'
+        {
+            line_count - 1
+        } else {
+            line_count
+        }
+    }
+
+    fn parse_line_ref(&self, value: &str) -> Option<usize> {
+        match value.trim() {
+            "." => Some(self.cursor.row + 1),
+            "$" => Some(self.content_line_count()),
+            other => other.parse::<usize>().ok(),
+        }
+    }
+
+    fn execute_delete_command(&mut self, cmd: &str) -> bool {
+        if let Some(rest) = cmd.strip_prefix("g!/") {
+            return self.execute_global_delete(rest, true);
+        }
+        if let Some(rest) = cmd.strip_prefix("g/") {
+            return self.execute_global_delete(rest, false);
+        }
+        let Some(range) = cmd.strip_suffix('d') else {
+            return false;
+        };
+        let Some((start, end)) = range.split_once(',') else {
+            return false;
+        };
+        let Some(start_line) = self.parse_line_ref(start) else {
+            return false;
+        };
+        let Some(end_line) = self.parse_line_ref(end) else {
+            return false;
+        };
+        self.delete_line_range(start_line, end_line);
+        true
+    }
+
+    fn execute_global_delete(&mut self, rest: &str, invert: bool) -> bool {
+        let Some((pattern, command)) = rest.rsplit_once('/') else {
+            return false;
+        };
+        if command != "d" {
+            return false;
+        }
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(e) => {
+                self.status_message = Some(format!("Invalid regex: {e}"));
+                return true;
+            }
+        };
+        let mut rows = Vec::new();
+        for row in 0..self.content_line_count() {
+            let line = self.document.rope.line(row).to_string();
+            let text = line.trim_end_matches(['\n', '\r']);
+            if re.is_match(text) != invert {
+                rows.push(row);
+            }
+        }
+        if rows.is_empty() {
+            self.status_message = Some("Pattern not found".to_string());
+            return true;
+        }
+        for row in rows.into_iter().rev() {
+            self.cursor.row = row.min(self.document.line_count().saturating_sub(1));
+            self.cursor.col = 0;
+            self.delete_lines(1);
+        }
+        self.clamp_cursor();
+        true
+    }
+
+    fn delete_line_range(&mut self, start_line: usize, end_line: usize) {
+        let max_line = self.content_line_count().max(1);
+        let start = start_line.min(end_line).clamp(1, max_line);
+        let end = start_line.max(end_line).clamp(start, max_line);
+        self.cursor.row = start - 1;
+        self.cursor.col = 0;
+        self.delete_lines(end - start + 1);
     }
 
     fn execute_git_command(&mut self, cmd: &str) -> Option<DeferredAction> {

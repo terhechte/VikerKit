@@ -125,11 +125,13 @@ pub fn execute(editor: &mut Editor, cmd: Command) -> Option<DeferredAction> {
         Command::MoveColumn => editor.move_column(1),
         Command::MoveLineDownFirstNonBlank => editor.move_line_down_first_non_blank(),
         Command::MoveLineUpFirstNonBlank => editor.move_line_up_first_non_blank(),
+        Command::MoveLastNonBlank => editor.move_last_non_blank(),
         Command::MoveDocumentLineDown => editor.move_document_line_down(),
         Command::MoveDocumentLineUp => editor.move_document_line_up(),
 
         // Editing
         Command::InsertChar(ch) => editor.insert_char(ch),
+        Command::InsertRegister(ch) => editor.insert_register(ch),
         Command::DeleteCharForward => editor.delete_char_forward(),
         Command::DeleteCharBackward => editor.delete_char_backward(),
         Command::DeleteCharBackwardNormal => editor.delete_char_backward_normal(),
@@ -166,6 +168,7 @@ pub fn execute(editor: &mut Editor, cmd: Command) -> Option<DeferredAction> {
 
         // Join lines
         Command::JoinLines => editor.join_lines(),
+        Command::JoinLinesNoSpace => editor.join_lines_no_space(),
 
         // Undo/Redo
         Command::Undo => editor.undo(),
@@ -199,6 +202,8 @@ pub fn execute(editor: &mut Editor, cmd: Command) -> Option<DeferredAction> {
         // Paste
         Command::PasteAfter => editor.paste_after(),
         Command::PasteBefore => editor.paste_before(),
+        Command::PasteAfterLeaveAfter => editor.paste_after_leave_after(),
+        Command::PasteBeforeLeaveAfter => editor.paste_before_leave_after(),
 
         // Yank line
         Command::YankLine => editor.yank_line(),
@@ -255,6 +260,8 @@ pub fn execute(editor: &mut Editor, cmd: Command) -> Option<DeferredAction> {
         Command::ScrollCenter => editor.scroll_center(),
         Command::ScrollTop => editor.scroll_top(),
         Command::ScrollBottom => editor.scroll_bottom(),
+        Command::ScrollViewportDown => editor.scroll_viewport_down(1),
+        Command::ScrollViewportUp => editor.scroll_viewport_up(1),
 
         // Buffer switching
         Command::NextBuffer => return editor.next_buffer(),
@@ -386,9 +393,12 @@ fn track_change(editor: &mut Editor, cmd: &Command) {
         | Command::IndentLine
         | Command::DedentLine
         | Command::JoinLines
+        | Command::JoinLinesNoSpace
         | Command::ReplaceChar(_)
         | Command::PasteAfter
         | Command::PasteBefore
+        | Command::PasteAfterLeaveAfter
+        | Command::PasteBeforeLeaveAfter
         | Command::ToggleCaseChar
         | Command::CaseChange(_, _)
         | Command::CaseChangeLine(_)

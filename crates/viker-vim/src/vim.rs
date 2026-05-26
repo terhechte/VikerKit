@@ -592,6 +592,19 @@ impl VimCore {
         self.cursor.col = col;
     }
 
+    pub fn move_last_non_blank(&mut self) {
+        let line = self.document.rope.line(self.cursor.row);
+        let line_len = buffer::line_display_len(line);
+        for col in (0..line_len).rev() {
+            let ch = line.char(col);
+            if !ch.is_whitespace() || ch == '\n' {
+                self.cursor.col = col;
+                return;
+            }
+        }
+        self.cursor.col = 0;
+    }
+
     pub fn move_word_forward_big(&mut self) {
         let line_count = self.document.line_count();
         let mut row = self.cursor.row;
@@ -936,6 +949,25 @@ impl VimCore {
         };
         if let Some(close) = closing {
             self.document.insert_char(self.cursor, close);
+        }
+    }
+
+    pub fn insert_register(&mut self, name: char) {
+        let Some(reg) = self.read_register(name) else {
+            self.set_message(format!("register \"{} is empty", name));
+            return;
+        };
+        if reg.content.is_empty() {
+            self.set_message(format!("register \"{} is empty", name));
+            return;
+        }
+        let idx = self.document.rope.line_to_char(self.cursor.row) + self.cursor.col;
+        self.document.rope.insert(idx, &reg.content);
+        self.document.modified = true;
+        self.document.bump_version();
+        let inserted = reg.content.chars().count();
+        if inserted > 0 {
+            self.cursor.col += inserted;
         }
     }
 
@@ -1922,6 +1954,7 @@ impl VimCore {
             Motion::FindBackward(ch) => self.find_char_backward(*ch),
             Motion::TillForward(ch) => self.till_char_forward(*ch),
             Motion::TillBackward(ch) => self.till_char_backward(*ch),
+            Motion::Mark { mark, exact } => self.goto_mark(*mark, *exact),
             Motion::Inner(_) | Motion::Around(_) => return None,
         }
         Some(())
@@ -2032,6 +2065,25 @@ impl VimCore {
                     }
                 }
                 None
+            }
+            Motion::Mark { mark, exact } => {
+                let mut target = self.marks.get(mark).copied()?;
+                if !exact {
+                    let saved = self.cursor;
+                    self.cursor = target;
+                    self.cursor.col = 0;
+                    self.move_first_non_blank();
+                    target = self.cursor;
+                    self.cursor = saved;
+                }
+                let target_idx = self.document.rope.line_to_char(target.row) + target.col;
+                if target_idx < cursor_idx {
+                    Some((target_idx, cursor_idx))
+                } else if target_idx > cursor_idx {
+                    Some((cursor_idx, target_idx))
+                } else {
+                    None
+                }
             }
             Motion::FirstNonBlank => {
                 let saved = self.cursor;
@@ -2576,6 +2628,14 @@ impl VimCore {
     // --- Join lines ---
 
     pub fn join_lines(&mut self) {
+        self.join_lines_with_separator(true);
+    }
+
+    pub fn join_lines_no_space(&mut self) {
+        self.join_lines_with_separator(false);
+    }
+
+    fn join_lines_with_separator(&mut self, insert_space: bool) {
         if self.cursor.row + 1 >= self.document.line_count() {
             return;
         }
@@ -2592,7 +2652,7 @@ impl VimCore {
         let remove_end = (newline_idx + 1 + leading_ws).min(self.document.rope.len_chars());
         if newline_idx < remove_end {
             self.document.rope.remove(newline_idx..remove_end);
-            if newline_idx < self.document.rope.len_chars() {
+            if insert_space && newline_idx < self.document.rope.len_chars() {
                 self.document.rope.insert_char(newline_idx, ' ');
             }
             self.document.modified = true;
@@ -2755,6 +2815,16 @@ impl VimCore {
         if reg_name != '"' {
             self.set_message(format!("pasted from register \"{}", reg_name));
         }
+    }
+
+    pub fn paste_after_leave_after(&mut self) {
+        self.paste_after();
+        self.move_right();
+    }
+
+    pub fn paste_before_leave_after(&mut self) {
+        self.paste_before();
+        self.move_right();
     }
 
     // --- Mode changes ---
@@ -2947,6 +3017,7 @@ impl VimCore {
         if pattern.is_empty() {
             return None;
         }
+        let pattern = pattern.strip_prefix("\\v").unwrap_or(pattern);
 
         let case_sensitive = match force_case {
             Some(sensitive) => sensitive,
@@ -3050,9 +3121,12 @@ impl VimCore {
                 Command::IndentLine => self.indent_line(),
                 Command::DedentLine => self.dedent_line(),
                 Command::JoinLines => self.join_lines(),
+                Command::JoinLinesNoSpace => self.join_lines_no_space(),
                 Command::ReplaceChar(ch) => self.replace_char(ch),
                 Command::PasteAfter => self.paste_after(),
                 Command::PasteBefore => self.paste_before(),
+                Command::PasteAfterLeaveAfter => self.paste_after_leave_after(),
+                Command::PasteBeforeLeaveAfter => self.paste_before_leave_after(),
                 _ => {}
             },
             LastChange::InsertSession { entry_cmd, chars } => {
@@ -3652,6 +3726,49 @@ impl VimCore {
     }
 
     pub fn read_register(&self, name: char) -> Option<Register> {
+        match name {
+            '%' => {
+                let content = self
+                    .document
+                    .path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| self.document.file_name().to_string());
+                return Some(Register {
+                    content,
+                    linewise: false,
+                });
+            }
+            '/' => {
+                return Some(Register {
+                    content: self.search_query.clone(),
+                    linewise: false,
+                });
+            }
+            ':' => {
+                return Some(Register {
+                    content: self.command_history.last().cloned().unwrap_or_default(),
+                    linewise: false,
+                });
+            }
+            '.' => {
+                let content = match &self.last_change {
+                    Some(LastChange::InsertSession { chars, .. }) => chars.iter().collect(),
+                    _ => String::new(),
+                };
+                return Some(Register {
+                    content,
+                    linewise: false,
+                });
+            }
+            '#' | '=' => {
+                return Some(Register {
+                    content: String::new(),
+                    linewise: false,
+                });
+            }
+            _ => {}
+        }
         if name == '+' || name == '*' {
             if let Some(ref text) = self.clipboard_content {
                 let reg = Register {
@@ -3984,6 +4101,10 @@ impl VimCore {
             return;
         }
 
+        if self.execute_delete_command(trimmed) {
+            return;
+        }
+
         if let Some(path) = trimmed
             .strip_prefix("split ")
             .or_else(|| trimmed.strip_prefix("sp "))
@@ -4048,6 +4169,30 @@ impl VimCore {
                     "No registers".to_string()
                 } else {
                     format!("Registers: {summary}")
+                });
+            }
+            "marks" => {
+                let mut names: Vec<char> = self.marks.keys().copied().collect();
+                names.sort_unstable();
+                let summary = names
+                    .into_iter()
+                    .map(|name| format!("'{name}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.set_message(if summary.is_empty() {
+                    "No marks".to_string()
+                } else {
+                    format!("Marks: {summary}")
+                });
+            }
+            "jumps" | "ju" => {
+                self.set_message(format!("{} jump(s)", self.jump_list.len()));
+            }
+            "changes" => {
+                self.set_message(if self.last_change.is_some() {
+                    "1 change(s)".to_string()
+                } else {
+                    "No changes".to_string()
                 });
             }
             "w" => {
@@ -4163,6 +4308,93 @@ impl VimCore {
         }
     }
 
+    fn content_line_count(&self) -> usize {
+        let line_count = self.document.line_count();
+        if line_count > 1
+            && self.document.rope.len_chars() > 0
+            && self.document.rope.char(self.document.rope.len_chars() - 1) == '\n'
+        {
+            line_count - 1
+        } else {
+            line_count
+        }
+    }
+
+    fn parse_line_ref(&self, value: &str) -> Option<usize> {
+        match value.trim() {
+            "." => Some(self.cursor.row + 1),
+            "$" => Some(self.content_line_count()),
+            other => other.parse::<usize>().ok(),
+        }
+    }
+
+    fn execute_delete_command(&mut self, cmd: &str) -> bool {
+        if let Some(rest) = cmd.strip_prefix("g!/") {
+            return self.execute_global_delete(rest, true);
+        }
+        if let Some(rest) = cmd.strip_prefix("g/") {
+            return self.execute_global_delete(rest, false);
+        }
+        let Some(range) = cmd.strip_suffix('d') else {
+            return false;
+        };
+        let Some((start, end)) = range.split_once(',') else {
+            return false;
+        };
+        let Some(start_line) = self.parse_line_ref(start) else {
+            return false;
+        };
+        let Some(end_line) = self.parse_line_ref(end) else {
+            return false;
+        };
+        self.delete_line_range(start_line, end_line);
+        true
+    }
+
+    fn execute_global_delete(&mut self, rest: &str, invert: bool) -> bool {
+        let Some((pattern, command)) = rest.rsplit_once('/') else {
+            return false;
+        };
+        if command != "d" {
+            return false;
+        }
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(e) => {
+                self.set_message(format!("Invalid regex: {e}"));
+                return true;
+            }
+        };
+        let mut rows = Vec::new();
+        for row in 0..self.content_line_count() {
+            let line = self.document.rope.line(row).to_string();
+            let text = line.trim_end_matches(['\n', '\r']);
+            if re.is_match(text) != invert {
+                rows.push(row);
+            }
+        }
+        if rows.is_empty() {
+            self.set_message("Pattern not found");
+            return true;
+        }
+        for row in rows.into_iter().rev() {
+            self.cursor.row = row.min(self.document.line_count().saturating_sub(1));
+            self.cursor.col = 0;
+            self.delete_lines(1);
+        }
+        self.clamp_cursor();
+        true
+    }
+
+    fn delete_line_range(&mut self, start_line: usize, end_line: usize) {
+        let max_line = self.content_line_count().max(1);
+        let start = start_line.min(end_line).clamp(1, max_line);
+        let end = start_line.max(end_line).clamp(start, max_line);
+        self.cursor.row = start - 1;
+        self.cursor.col = 0;
+        self.delete_lines(end - start + 1);
+    }
+
     // --- Execute command ---
 
     fn track_change(&mut self, cmd: &Command) {
@@ -4175,9 +4407,12 @@ impl VimCore {
             | Command::IndentLine
             | Command::DedentLine
             | Command::JoinLines
+            | Command::JoinLinesNoSpace
             | Command::ReplaceChar(_)
             | Command::PasteAfter
             | Command::PasteBefore
+            | Command::PasteAfterLeaveAfter
+            | Command::PasteBeforeLeaveAfter
             | Command::ToggleCaseChar
             | Command::CaseChange(_, _)
             | Command::CaseChangeLine(_)
@@ -4263,10 +4498,12 @@ impl VimCore {
             Command::MoveColumn => self.move_column(1),
             Command::MoveLineDownFirstNonBlank => self.move_line_down_first_non_blank(),
             Command::MoveLineUpFirstNonBlank => self.move_line_up_first_non_blank(),
+            Command::MoveLastNonBlank => self.move_last_non_blank(),
             Command::MoveDocumentLineDown => self.move_document_line_down(),
             Command::MoveDocumentLineUp => self.move_document_line_up(),
 
             Command::InsertChar(ch) => self.insert_char(ch),
+            Command::InsertRegister(ch) => self.insert_register(ch),
             Command::DeleteCharForward => self.delete_char_forward(),
             Command::DeleteCharBackward => self.delete_char_backward(),
             Command::DeleteCharBackwardNormal => self.delete_char_backward_normal(),
@@ -4299,6 +4536,7 @@ impl VimCore {
             Command::ReplaceChar(ch) => self.replace_char(ch),
 
             Command::JoinLines => self.join_lines(),
+            Command::JoinLinesNoSpace => self.join_lines_no_space(),
 
             Command::Undo => self.undo(),
             Command::Redo => self.redo(),
@@ -4328,6 +4566,8 @@ impl VimCore {
 
             Command::PasteAfter => self.paste_after(),
             Command::PasteBefore => self.paste_before(),
+            Command::PasteAfterLeaveAfter => self.paste_after_leave_after(),
+            Command::PasteBeforeLeaveAfter => self.paste_before_leave_after(),
 
             Command::YankLine => self.yank_line(),
 
@@ -4398,6 +4638,8 @@ impl VimCore {
             Command::ScrollCenter => self.scroll_center(),
             Command::ScrollTop => self.scroll_top(),
             Command::ScrollBottom => self.scroll_bottom(),
+            Command::ScrollViewportDown => self.scroll_viewport_down(1),
+            Command::ScrollViewportUp => self.scroll_viewport_up(1),
 
             Command::NextBuffer => {
                 self.pending_effects.push(Effect::NextBuffer);

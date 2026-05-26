@@ -58,6 +58,7 @@ pub enum Motion {
     FindBackward(char),
     TillForward(char),
     TillBackward(char),
+    Mark { mark: char, exact: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -87,9 +88,11 @@ pub enum Command {
     MoveColumn,
     MoveLineDownFirstNonBlank,
     MoveLineUpFirstNonBlank,
+    MoveLastNonBlank,
 
     // Editing
     InsertChar(char),
+    InsertRegister(char),
     DeleteCharForward,
     DeleteCharBackward,
     DeleteCharBackwardNormal,
@@ -126,6 +129,7 @@ pub enum Command {
 
     // Join lines
     JoinLines,
+    JoinLinesNoSpace,
 
     // Undo/Redo
     Undo,
@@ -159,6 +163,8 @@ pub enum Command {
     // Paste
     PasteAfter,
     PasteBefore,
+    PasteAfterLeaveAfter,
+    PasteBeforeLeaveAfter,
 
     // Yank line
     YankLine,
@@ -239,6 +245,8 @@ pub enum Command {
     ScrollCenter,
     ScrollTop,
     ScrollBottom,
+    ScrollViewportDown,
+    ScrollViewportUp,
 
     // Phase 9: Buffer switching
     NextBuffer,
