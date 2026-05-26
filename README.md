@@ -72,6 +72,20 @@ The Swift package build produces `swift/VikerKit`, with a generated
 UniFFI Swift sources. Add that folder as a local package in Xcode and `import
 VikerKit`.
 
+The repository root is also a Swift package, so downstream apps can depend on
+the Viker repository directly and use the `VikerKit` product:
+
+```swift
+.package(url: "https://github.com/<owner>/<repo>.git", from: "0.1.0")
+```
+
+Add `.product(name: "VikerKit", package: "Viker")` to the consuming target's
+dependencies.
+
+The checked-in `VikerKitFFI.xcframework` static libraries are tracked with Git
+LFS. Consumers resolving the package from Git need Git LFS enabled so SwiftPM
+receives the real binary files rather than LFS pointer files.
+
 On macOS, `VikerKit` includes `VikerEditorComponent`, a reusable AppKit editor
 view around the Viker core. Initialize it with `VikerEditorConfiguration` to
 choose the color scheme, status bar visibility, top toolbar items, LSP loading,

@@ -1,2 +1,2 @@
-VikerKitFFI.xcframework
-Sources/VikerKit/*.swift
+.build
+.DS_Store

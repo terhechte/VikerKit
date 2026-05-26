@@ -1,4 +1,5 @@
 /target
+/.build
 CLAUDE.md
 unused
 .DS_Store
