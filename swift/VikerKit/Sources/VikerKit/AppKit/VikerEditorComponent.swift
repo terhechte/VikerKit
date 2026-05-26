@@ -67,6 +67,12 @@ public struct VikerEditorConfiguration {
     }
 }
 
+fileprivate enum VikerNativeScrollTarget {
+    case center
+    case top
+    case bottom
+}
+
 @MainActor
 public final class VikerEditorComponent: NSObject {
     private static let maximumTextHistoryEntries = 200
@@ -124,6 +130,7 @@ public final class VikerEditorComponent: NSObject {
     private let autosaveDelay: TimeInterval
     private var autosaveRequestID: UInt64 = 0
     private var pendingAutosaveRequestID: UInt64?
+    private var pendingNativeVimZScroll = false
     private var themeObserverToken: NSObjectProtocol?
 
     public private(set) var title: String
@@ -531,10 +538,12 @@ public final class VikerEditorComponent: NSObject {
 
     private func handleKeyDown(_ event: NSEvent) -> Bool {
         if handleAutosuggestionKeyDown(event) {
+            pendingNativeVimZScroll = false
             return true
         }
 
         if configuration.disablesNormalMode, event.keyCode == 53 {
+            pendingNativeVimZScroll = false
             dismissAutosuggestions()
             transientSelection = nil
             clearEditorError(source: .operation)
@@ -543,6 +552,7 @@ public final class VikerEditorComponent: NSObject {
         }
 
         if configuration.disablesNormalMode, !Self.isTextSelectionMode(snapshot.mode) {
+            pendingNativeVimZScroll = false
             do {
                 try enterInsertModeIfNeeded()
                 refreshSnapshot(syncLsp: false)
@@ -553,23 +563,31 @@ public final class VikerEditorComponent: NSObject {
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
+            pendingNativeVimZScroll = false
             guard event.charactersIgnoringModifiers?.lowercased() == "s" else { return false }
             dismissAutosuggestions()
             saveDocument()
             return true
         }
 
-        guard let keyEvent = Self.vikerKeyEvent(from: event) else { return false }
+        guard let keyEvent = Self.vikerKeyEvent(from: event) else {
+            pendingNativeVimZScroll = false
+            return false
+        }
 
         if Self.isCompletionShortcut(event) {
+            pendingNativeVimZScroll = false
             requestLspCompletion(explicit: true)
             return true
         }
 
         if handleInsertEditingShortcut(event) {
+            pendingNativeVimZScroll = false
             updateAutosuggestionsAfterEditorChange(event: event, keyEvent: keyEvent)
             return true
         }
+
+        let nativeScrollTarget = nativeVimScrollTarget(for: keyEvent)
 
         do {
             statusOverride = nil
@@ -591,6 +609,9 @@ public final class VikerEditorComponent: NSObject {
             applyEffects(effects)
             clearEditorError(source: .operation)
             refreshSnapshot()
+            if let nativeScrollTarget {
+                editorView.scrollCursor(to: nativeScrollTarget)
+            }
             updateAutosuggestionsAfterEditorChange(event: event, keyEvent: keyEvent)
             scheduleAutosaveIfNeeded()
         } catch {
@@ -598,6 +619,34 @@ public final class VikerEditorComponent: NSObject {
             present(error)
         }
         return true
+    }
+
+    private func nativeVimScrollTarget(for keyEvent: VikerKeyEvent) -> VikerNativeScrollTarget? {
+        guard snapshot.mode == .normal,
+              keyEvent.key == .character,
+              !keyEvent.ctrl,
+              !keyEvent.alt,
+              let text = keyEvent.text else {
+            pendingNativeVimZScroll = false
+            return nil
+        }
+
+        if pendingNativeVimZScroll {
+            pendingNativeVimZScroll = false
+            switch text {
+            case "z":
+                return .center
+            case "t":
+                return .top
+            case "b":
+                return .bottom
+            default:
+                return nil
+            }
+        }
+
+        pendingNativeVimZScroll = text == "z"
+        return nil
     }
 
     @discardableResult
@@ -3948,6 +3997,32 @@ private final class VikerEditorCanvasView: NSView {
             height: lineHeight
         ).insetBy(dx: -80, dy: -40)
         scrollToVisible(rect)
+    }
+
+    fileprivate func scrollCursor(to target: VikerNativeScrollTarget) {
+        guard let scrollView = enclosingScrollView,
+              let cursorRect = cursorRectInDocument() else {
+            return
+        }
+
+        let clipView = scrollView.contentView
+        let viewport = clipView.bounds.size
+        guard viewport.height > 0 else { return }
+
+        var origin = clipView.bounds.origin
+        switch target {
+        case .center:
+            origin.y = cursorRect.midY - viewport.height / 2
+        case .top:
+            origin.y = cursorRect.minY
+        case .bottom:
+            origin.y = cursorRect.maxY - viewport.height
+        }
+
+        let maxY = max(bounds.height - viewport.height, 0)
+        origin.y = Self.clamped(origin.y, lowerBound: 0, upperBound: maxY)
+        clipView.setBoundsOrigin(origin)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     private func visibleLineRange(in dirtyRect: NSRect) -> Range<Int> {

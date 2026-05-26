@@ -361,6 +361,32 @@ fn vim_core_counts_multiply_operator_and_motion_counts() {
 }
 
 #[test]
+fn vim_core_replaces_single_and_counted_characters() {
+    let mut vim = VimCore::from_text("abcdef\n");
+
+    type_keys(&mut vim, "lrZ");
+    assert_eq!(vim.text(), "aZcdef\n");
+
+    type_keys(&mut vim, "l3r!");
+    assert_eq!(vim.text(), "aZ!!!f\n");
+}
+
+#[test]
+fn vim_core_zz_centers_the_viewport() {
+    let text = (1..=30)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    let mut vim = VimCore::from_text(&text);
+    vim.view.width = 80;
+    vim.view.height = 5;
+
+    type_keys(&mut vim, "20Gzz");
+
+    assert_eq!(vim.cursor.row, 19);
+    assert_eq!(vim.view.offset_row, 17);
+}
+
+#[test]
 fn vim_core_counts_repeat_paste_and_macro_effects() {
     let mut vim = VimCore::from_text("one\ntwo\n");
 

@@ -75,6 +75,10 @@ pub fn execute_invocation(
             editor.move_column(count);
             None
         }
+        Command::ReplaceChar(ch) => {
+            editor.replace_chars(ch, count);
+            None
+        }
         command => {
             let mut deferred = None;
             for _ in 0..count {

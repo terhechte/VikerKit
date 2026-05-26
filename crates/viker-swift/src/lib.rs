@@ -3561,6 +3561,12 @@ mod tests {
         }
     }
 
+    fn type_keys(editor: &Arc<VikerEditor>, input: &str) {
+        for ch in input.chars() {
+            editor.process_key(char_event(ch)).unwrap();
+        }
+    }
+
     fn temp_workspace(name: &str) -> PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3651,6 +3657,49 @@ mod tests {
         let snapshot = editor.snapshot().unwrap();
         assert_eq!(snapshot.text, "Say hello\n");
         assert!(matches!(snapshot.mode, VikerMode::Normal));
+    }
+
+    #[test]
+    fn swift_editor_vim_replaces_characters() {
+        let editor = VikerEditor::from_text("abcdef".to_string());
+
+        type_keys(&editor, "lrZ");
+        assert_eq!(editor.text().unwrap(), "aZcdef\n");
+
+        type_keys(&editor, "l3r!");
+        assert_eq!(editor.text().unwrap(), "aZ!!!f\n");
+    }
+
+    #[test]
+    fn swift_editor_vim_counts_drive_movement_and_operators() {
+        let editor = VikerEditor::from_text(
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n".to_string(),
+        );
+
+        type_keys(&editor, "9j");
+        assert_eq!(editor.cursor().unwrap().row, 9);
+
+        type_keys(&editor, "gg3dd");
+        assert_eq!(
+            editor.text().unwrap(),
+            "four\nfive\nsix\nseven\neight\nnine\nten\n"
+        );
+    }
+
+    #[test]
+    fn swift_editor_vim_zz_centers_core_viewport() {
+        let text = (1..=30)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let editor = VikerEditor::from_text(text);
+
+        editor.set_viewport_size(80, 5).unwrap();
+        type_keys(&editor, "20Gzz");
+
+        let cursor = editor.cursor().unwrap();
+        let view_cell = editor.cursor_view_cell().unwrap().unwrap();
+        assert_eq!(cursor.row, 19);
+        assert_eq!(view_cell.row, 2);
     }
 
     #[test]

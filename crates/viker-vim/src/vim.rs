@@ -2546,14 +2546,23 @@ impl VimCore {
     // --- Replace character ---
 
     pub fn replace_char(&mut self, ch: char) {
+        self.replace_chars(ch, 1);
+    }
+
+    pub fn replace_chars(&mut self, ch: char, count: usize) {
         let line_len = self.document.line_len(self.cursor.row);
         if self.cursor.col >= line_len {
             return;
         }
+        let count = count.max(1).min(line_len.saturating_sub(self.cursor.col));
+        if count == 0 {
+            return;
+        }
         self.save_undo();
         let idx = self.document.rope.line_to_char(self.cursor.row) + self.cursor.col;
-        self.document.rope.remove(idx..idx + 1);
-        self.document.rope.insert_char(idx, ch);
+        self.document.rope.remove(idx..idx + count);
+        let replacement: String = std::iter::repeat_n(ch, count).collect();
+        self.document.rope.insert(idx, &replacement);
         self.document.modified = true;
         self.document.bump_version();
         if self.mode == Mode::Replace {
@@ -4599,6 +4608,7 @@ impl VimCore {
             Command::FormatMotion(motion) => self.format_motion_count(&motion, count),
             Command::FilterMotion(motion) => self.filter_motion_count(&motion, count),
             Command::MoveColumn => self.move_column(count),
+            Command::ReplaceChar(ch) => self.replace_chars(ch, count),
             command => {
                 for _ in 0..count {
                     self.execute(command.clone());
