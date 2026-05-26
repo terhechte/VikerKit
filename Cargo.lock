@@ -5421,8 +5421,6 @@ dependencies = [
 name = "viker-vim"
 version = "0.1.4"
 dependencies = [
- "regex",
- "ropey",
  "viker-core",
 ]
 

@@ -9,3 +9,4 @@ pub mod key;
 pub mod language;
 pub mod lsp;
 pub mod search;
+pub mod vim;
