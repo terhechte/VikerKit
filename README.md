@@ -10,18 +10,9 @@ Viker includes tree-sitter highlighting and language-aware LSP/formatting hooks 
 
 ## Documentation
 
-- [Viker Guide](docs/viker-guide.md): shortcuts, app workflows,
-  configuration, and library integration.
-- [Recent Changes Audit](docs/recent-changes.md): summary of the major changes
-  added on this branch and how they are exposed through the frontends.
-- [Wasm / TypeScript Feasibility](docs/wasm-typescript.md): what can compile
-  to wasm today and the recommended package boundary.
-- [Swift Example](swift/Example/README.md): standalone macOS editor example
-  that depends only on the local `VikerKit` Swift package.
-- [VikerKit](swift/VikerKit/README.md): generated Swift package plus the
-  reusable AppKit `VikerEditorComponent`.
-- [Website](website/index.html): static product site with mock screenshot
-  placeholders.
+- [Viker Guide](docs/viker-guide.md): shortcuts, app workflows, configuration, and library integration.
+- [Swift Example](swift/Example/README.md): standalone macOS editor example that depends only on the local `VikerKit` Swift package.
+- [VikerKit](swift/VikerKit/README.md): generated Swift package plus the reusable AppKit `VikerEditorComponent`.
 
 ## Requirements
 
