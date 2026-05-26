@@ -8,6 +8,8 @@ FFI_MODULE_NAME="VikerKitFFI"
 PACKAGE_DIR="$ROOT/swift/VikerKit"
 BUILD_DIR="$ROOT/target/viker-swift"
 RELEASE_DIR="release"
+IOS_DEPLOYMENT_TARGET="${VIKER_SWIFT_IOS_DEPLOYMENT_TARGET:-15.0}"
+MACOS_DEPLOYMENT_TARGET="${VIKER_SWIFT_MACOS_DEPLOYMENT_TARGET:-13.0}"
 
 DEVICE_TARGET="aarch64-apple-ios"
 SIM_TARGETS=("aarch64-apple-ios-sim")
@@ -44,12 +46,15 @@ echo "Installing Rust Apple targets"
 rustup target add "$DEVICE_TARGET" "${SIM_TARGETS[@]}" "${MACOS_TARGETS[@]}"
 
 echo "Building Rust static libraries"
-cargo build -p "$CRATE_PACKAGE" --release --target "$DEVICE_TARGET"
+IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+  cargo build -p "$CRATE_PACKAGE" --release --target "$DEVICE_TARGET"
 for target in "${SIM_TARGETS[@]}"; do
-  cargo build -p "$CRATE_PACKAGE" --release --target "$target"
+  IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+    cargo build -p "$CRATE_PACKAGE" --release --target "$target"
 done
 for target in "${MACOS_TARGETS[@]}"; do
-  cargo build -p "$CRATE_PACKAGE" --release --target "$target"
+  MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
+    cargo build -p "$CRATE_PACKAGE" --release --target "$target"
 done
 
 DEVICE_LIB="$ROOT/target/$DEVICE_TARGET/$RELEASE_DIR/lib$LIB_NAME.a"
