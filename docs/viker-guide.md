@@ -280,7 +280,7 @@ editor next to independent application controls.
 
 ## Current Limits
 
-- Clipboard integration is currently macOS-oriented.
+- Clipboard integration uses `clipboard-rs` for native text clipboard access on supported platforms.
 - LSP workspace edits are applied only to the active file.
 - The GUI project sidebar is not rendered in the TUI.
 - LSP is active-buffer oriented rather than a persistent multi-server workspace.
