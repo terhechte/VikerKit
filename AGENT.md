@@ -69,6 +69,8 @@ specific package you need.
   operations for the app editor. Owns buffers, panes, modes, cursor/view state,
   commands, registers, marks, search, completion state, diagnostics state, and
   deferred actions.
+- `crates/viker-core/src/vim.rs`: shared standalone Vim editing engine used by
+  the Vim conformance tests and wrapped by `viker-vim` for key processing.
 - `crates/viker-core/src/editor/document.rs`: document rope, path, save/open,
   modified flag, and version tracking.
 - `crates/viker-core/src/editor/pane.rs`: frontend-independent split-pane
@@ -89,9 +91,8 @@ specific package you need.
 
 ## Vim Module
 
-- `crates/viker-vim/src/vim.rs`: `VimCore`, the state-machine compatibility
-  target for Vim bindings. Keep binding logic here when it does not require the
-  full app editor.
+- `crates/viker-vim/src/vim.rs`: thin wrapper around `viker_core::vim::VimCore`
+  that connects the shared Vim engine to the keymap.
 - `crates/viker-vim/src/keymap.rs`: maps `KeyInput` plus keymap state to
   command invocations, including counts, pending operators, text objects,
   register selection, file finder, and popup modes.

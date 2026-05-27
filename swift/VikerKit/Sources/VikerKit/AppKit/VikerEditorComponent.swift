@@ -1707,6 +1707,26 @@ public final class VikerEditorComponent: NSObject {
                 statusOverride = effect.payload ?? "Macro requested"
             case .git:
                 statusOverride = effect.payload ?? "Git operation requested"
+            case .triggerCompletion:
+                requestLspCompletion(explicit: true)
+            case .workspaceSymbol:
+                showWorkspaceSymbols()
+            case .gotoDefinition:
+                statusOverride = effect.payload ?? "Go to definition requested"
+            case .hover:
+                statusOverride = effect.payload ?? "Hover requested"
+            case .findReferences:
+                statusOverride = effect.payload ?? "References requested"
+            case .referenceJump:
+                statusOverride = effect.payload ?? "Reference jump requested"
+            case .openFileFinder:
+                statusOverride = effect.payload ?? "Open file requested"
+            case .codeAction:
+                statusOverride = effect.payload ?? "Code action requested"
+            case .codeActionAccept:
+                statusOverride = effect.payload ?? "Code action requested"
+            case .workspaceSymbolConfirm:
+                statusOverride = effect.payload ?? "Workspace symbol requested"
             }
         }
     }

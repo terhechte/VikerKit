@@ -9,6 +9,7 @@ use viker_core::editor::{DeferredAction, Editor, HighlightSpan};
 use viker_core::highlight::SyntaxLanguage;
 use viker_core::highlight::style::{RgbColor, SyntaxStyle, SyntaxToken};
 use viker_core::input;
+use viker_core::input::command::Command;
 use viker_core::input::mode::Mode;
 use viker_core::key::{KeyCode, KeyInput};
 use viker_core::lsp::{self, AppEvent, LspClient, LspMessage};
@@ -458,7 +459,7 @@ pub struct VikerKeyEvent {
     pub alt: bool,
 }
 
-#[derive(Clone, Copy, Debug, uniffi::Enum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum VikerEffectKind {
     Rename,
     DidSave,
@@ -468,9 +469,19 @@ pub enum VikerEffectKind {
     FormatDocument,
     PlayMacro,
     Git,
+    TriggerCompletion,
+    GotoDefinition,
+    Hover,
+    FindReferences,
+    ReferenceJump,
+    OpenFileFinder,
+    CodeAction,
+    CodeActionAccept,
+    WorkspaceSymbol,
+    WorkspaceSymbolConfirm,
 }
 
-#[derive(Clone, Debug, uniffi::Record)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct VikerEffect {
     pub kind: VikerEffectKind,
     pub payload: Option<String>,
@@ -3091,32 +3102,84 @@ fn apply_text_edits(editor: &mut Editor, edits: &mut [lsp::LspTextEdit]) -> usiz
 }
 
 fn process_core_key(editor: &mut Editor, key: KeyInput) -> Vec<VikerEffect> {
+    process_core_key_inner(editor, key, true, true)
+}
+
+fn process_core_key_inner(
+    editor: &mut Editor,
+    key: KeyInput,
+    record_macro: bool,
+    allow_macro_playback: bool,
+) -> Vec<VikerEffect> {
+    if record_macro && editor.recording_macro.is_some() {
+        let is_stop =
+            matches!(key.code, KeyCode::Char('q')) && !key.ctrl && editor.mode == Mode::Normal;
+        if !is_stop {
+            editor.macro_buffer.push(key);
+        }
+    }
+
     let Some(invocation) = keymap::map_key(editor, key) else {
         return Vec::new();
     };
+
+    let command = invocation.command.clone();
+    let mut effects = command_trigger_effect(&command)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if !matches!(
+        command,
+        Command::TriggerCompletion
+            | Command::AcceptCompletion
+            | Command::CancelCompletion
+            | Command::CompletionNext
+            | Command::CompletionPrev
+    ) && editor.showing_completion
+    {
+        editor.cancel_completion();
+    }
+
     let Some(action) = input::execute_invocation(editor, invocation) else {
-        return Vec::new();
+        return effects;
     };
 
     match action {
-        DeferredAction::PlayMacro(register) => {
+        DeferredAction::PlayMacro(register) if allow_macro_playback => {
             let Some(keys) = editor.macros.get(&register).cloned() else {
-                return Vec::new();
+                return effects;
             };
-            let mut effects = Vec::new();
             for macro_key in keys {
-                if let Some(invocation) = keymap::map_key(editor, macro_key) {
-                    if let Some(action) = input::execute_invocation(editor, invocation) {
-                        if !matches!(action, DeferredAction::PlayMacro(_)) {
-                            effects.push(effect_from_deferred(action));
-                        }
-                    }
-                }
+                effects.extend(process_core_key_inner(editor, macro_key, false, false));
             }
             effects
         }
-        other => vec![effect_from_deferred(other)],
+        DeferredAction::PlayMacro(_) => effects,
+        other => {
+            effects.push(effect_from_deferred(other));
+            effects
+        }
     }
+}
+
+fn command_trigger_effect(command: &Command) -> Option<VikerEffect> {
+    let kind = match command {
+        Command::TriggerCompletion => VikerEffectKind::TriggerCompletion,
+        Command::GotoDefinition => VikerEffectKind::GotoDefinition,
+        Command::Hover => VikerEffectKind::Hover,
+        Command::FindReferences => VikerEffectKind::FindReferences,
+        Command::ReferenceJump => VikerEffectKind::ReferenceJump,
+        Command::OpenFileFinder => VikerEffectKind::OpenFileFinder,
+        Command::CodeAction => VikerEffectKind::CodeAction,
+        Command::CodeActionAccept => VikerEffectKind::CodeActionAccept,
+        Command::WorkspaceSymbol => VikerEffectKind::WorkspaceSymbol,
+        Command::WorkspaceSymbolConfirm => VikerEffectKind::WorkspaceSymbolConfirm,
+        _ => return None,
+    };
+    Some(VikerEffect {
+        kind,
+        payload: None,
+    })
 }
 
 fn effect_from_deferred(action: DeferredAction) -> VikerEffect {
@@ -3561,10 +3624,31 @@ mod tests {
         }
     }
 
+    fn ctrl_event(ch: char) -> VikerKeyEvent {
+        VikerKeyEvent {
+            key: VikerKey::Character,
+            text: Some(ch.to_string()),
+            ctrl: true,
+            alt: false,
+        }
+    }
+
     fn type_keys(editor: &Arc<VikerEditor>, input: &str) {
         for ch in input.chars() {
             editor.process_key(char_event(ch)).unwrap();
         }
+    }
+
+    fn type_keys_collect(editor: &Arc<VikerEditor>, input: &str) -> Vec<VikerEffect> {
+        let mut effects = Vec::new();
+        for ch in input.chars() {
+            effects.extend(editor.process_key(char_event(ch)).unwrap());
+        }
+        effects
+    }
+
+    fn effect_kinds(effects: Vec<VikerEffect>) -> Vec<VikerEffectKind> {
+        effects.into_iter().map(|effect| effect.kind).collect()
     }
 
     fn temp_workspace(name: &str) -> PathBuf {
@@ -3700,6 +3784,122 @@ mod tests {
         let view_cell = editor.cursor_view_cell().unwrap().unwrap();
         assert_eq!(cursor.row, 19);
         assert_eq!(view_cell.row, 2);
+    }
+
+    #[test]
+    fn swift_editor_vim_supports_recent_cursor_and_scroll_bindings() {
+        let editor = VikerEditor::from_text("one   ".to_string());
+        type_keys(&editor, "g_");
+        assert_eq!(editor.cursor().unwrap().column, 2);
+
+        let editor = VikerEditor::from_text("abcdef".to_string());
+        editor.set_viewport_size(6, 5).unwrap();
+        editor.execute_command("set wrap".to_string()).unwrap();
+        type_keys(&editor, "gj");
+        assert_eq!(editor.cursor().unwrap().column, 3);
+        type_keys(&editor, "gk");
+        assert_eq!(editor.cursor().unwrap().column, 0);
+
+        let text = (1..=20)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let editor = VikerEditor::from_text(text);
+        editor.set_viewport_size(80, 5).unwrap();
+        editor
+            .execute_command("set scrolloff=0".to_string())
+            .unwrap();
+        editor.set_cursor(2, 0).unwrap();
+        assert_eq!(editor.cursor_view_cell().unwrap().unwrap().row, 2);
+        editor.process_key(ctrl_event('e')).unwrap();
+        assert_eq!(editor.cursor_view_cell().unwrap().unwrap().row, 1);
+        editor.process_key(ctrl_event('y')).unwrap();
+        assert_eq!(editor.cursor_view_cell().unwrap().unwrap().row, 2);
+    }
+
+    #[test]
+    fn swift_editor_vim_supports_recent_edit_register_and_visual_bindings() {
+        let editor = VikerEditor::from_text("one\ntwo".to_string());
+        type_keys(&editor, "gJ");
+        assert_eq!(editor.text().unwrap(), "onetwo\n");
+
+        let editor = VikerEditor::from_text("xy abc".to_string());
+        type_keys(&editor, "\"ayiw");
+        editor.set_text("abc".to_string()).unwrap();
+        type_keys(&editor, "lgp");
+        assert_eq!(editor.text().unwrap(), "abxyc\n");
+
+        let editor = VikerEditor::from_text("xy abc".to_string());
+        type_keys(&editor, "\"ayiw");
+        editor.set_text("abc".to_string()).unwrap();
+        type_keys(&editor, "lgP");
+        assert_eq!(editor.text().unwrap(), "axybc\n");
+
+        let editor = VikerEditor::from_text("X base".to_string());
+        type_keys(&editor, "\"ayiw");
+        editor.set_text("base".to_string()).unwrap();
+        editor.process_key(char_event('i')).unwrap();
+        editor.process_key(ctrl_event('r')).unwrap();
+        editor.process_key(char_event('a')).unwrap();
+        editor
+            .process_key(VikerKeyEvent {
+                key: VikerKey::Escape,
+                text: None,
+                ctrl: false,
+                alt: false,
+            })
+            .unwrap();
+        assert_eq!(editor.text().unwrap(), "Xbase\n");
+
+        let editor = VikerEditor::from_text("abc".to_string());
+        editor.process_key(char_event('i')).unwrap();
+        editor.process_key(ctrl_event('o')).unwrap();
+        editor.process_key(char_event('x')).unwrap();
+        assert!(matches!(editor.mode().unwrap(), VikerMode::Insert));
+        assert_eq!(editor.text().unwrap(), "bc\n");
+        editor.process_key(char_event('Z')).unwrap();
+        assert_eq!(editor.text().unwrap(), "Zbc\n");
+
+        let editor = VikerEditor::from_text("abc".to_string());
+        editor.process_key(char_event('v')).unwrap();
+        editor.process_key(ctrl_event('c')).unwrap();
+        assert!(matches!(editor.mode().unwrap(), VikerMode::Normal));
+    }
+
+    #[test]
+    fn swift_editor_vim_exposes_host_action_effects() {
+        let editor = VikerEditor::from_text("symbol".to_string());
+        assert_eq!(
+            effect_kinds(type_keys_collect(&editor, "gD")),
+            vec![VikerEffectKind::GotoDefinition]
+        );
+        assert_eq!(
+            effect_kinds(editor.process_key(ctrl_event(']')).unwrap()),
+            vec![VikerEffectKind::GotoDefinition]
+        );
+        assert_eq!(
+            effect_kinds(editor.process_key(ctrl_event('p')).unwrap()),
+            vec![VikerEffectKind::OpenFileFinder]
+        );
+        editor.process_key(char_event('i')).unwrap();
+        assert_eq!(
+            effect_kinds(editor.process_key(ctrl_event(' ')).unwrap()),
+            vec![VikerEffectKind::TriggerCompletion]
+        );
+    }
+
+    #[test]
+    fn swift_editor_vim_records_and_replays_macros() {
+        let editor = VikerEditor::from_text("abc".to_string());
+
+        type_keys(&editor, "qalq0@a");
+
+        assert_eq!(editor.cursor().unwrap().column, 1);
+        let registers = editor.register_summaries().unwrap();
+        assert!(
+            registers
+                .iter()
+                .any(|register| register.name == "a" && register.is_macro)
+        );
     }
 
     #[test]

@@ -3858,6 +3858,16 @@ public enum VikerEffectKind: Equatable, Hashable {
     case formatDocument
     case playMacro
     case git
+    case triggerCompletion
+    case gotoDefinition
+    case hover
+    case findReferences
+    case referenceJump
+    case openFileFinder
+    case codeAction
+    case codeActionAccept
+    case workspaceSymbol
+    case workspaceSymbolConfirm
 
 
 
@@ -3894,6 +3904,26 @@ public struct FfiConverterTypeVikerEffectKind: FfiConverterRustBuffer {
         case 7: return .playMacro
         
         case 8: return .git
+        
+        case 9: return .triggerCompletion
+        
+        case 10: return .gotoDefinition
+        
+        case 11: return .hover
+        
+        case 12: return .findReferences
+        
+        case 13: return .referenceJump
+        
+        case 14: return .openFileFinder
+        
+        case 15: return .codeAction
+        
+        case 16: return .codeActionAccept
+        
+        case 17: return .workspaceSymbol
+        
+        case 18: return .workspaceSymbolConfirm
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3933,6 +3963,46 @@ public struct FfiConverterTypeVikerEffectKind: FfiConverterRustBuffer {
         
         case .git:
             writeInt(&buf, Int32(8))
+        
+        
+        case .triggerCompletion:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .gotoDefinition:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .hover:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .findReferences:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .referenceJump:
+            writeInt(&buf, Int32(13))
+        
+        
+        case .openFileFinder:
+            writeInt(&buf, Int32(14))
+        
+        
+        case .codeAction:
+            writeInt(&buf, Int32(15))
+        
+        
+        case .codeActionAccept:
+            writeInt(&buf, Int32(16))
+        
+        
+        case .workspaceSymbol:
+            writeInt(&buf, Int32(17))
+        
+        
+        case .workspaceSymbolConfirm:
+            writeInt(&buf, Int32(18))
         
         }
     }
