@@ -67,7 +67,7 @@ The repository root is also a Swift package, so downstream apps can depend on
 the VikerKit repository directly and use the `VikerKit` product:
 
 ```swift
-.package(url: "https://github.com/terhechte/VikerKit.git", from: "0.1.4")
+.package(url: "https://github.com/terhechte/VikerKit.git", from: "0.1.5")
 ```
 
 Add `.product(name: "VikerKit", package: "VikerKit")` to the consuming target's
