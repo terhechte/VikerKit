@@ -5395,6 +5395,7 @@ name = "viker-swift"
 version = "0.1.5"
 dependencies = [
  "anyhow",
+ "git2",
  "serde_json",
  "tokio",
  "uniffi",

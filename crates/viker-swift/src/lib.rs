@@ -276,14 +276,15 @@ pub struct VikerLspWorkspaceEvent {
     pub message: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, uniffi::Enum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum VikerGitDiffMode {
     Worktree,
     Staged,
     Head,
+    Reference,
 }
 
-#[derive(Clone, Copy, Debug, uniffi::Enum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum VikerGitChangeKind {
     Added,
     Modified,
@@ -296,12 +297,19 @@ pub enum VikerGitChangeKind {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, uniffi::Enum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum VikerGitLineKind {
     Context,
     Addition,
     Deletion,
     Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum VikerGitApplyPatchMode {
+    StageToIndex,
+    UnstageFromIndex,
+    DiscardFromWorktree,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -314,6 +322,7 @@ pub struct VikerGitPatchHighlight {
 
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct VikerGitDiffLine {
+    pub id: String,
     pub old_line: Option<u64>,
     pub new_line: Option<u64>,
     pub kind: VikerGitLineKind,
@@ -331,6 +340,7 @@ pub struct VikerGitDiffHunk {
     pub new_start: u64,
     pub new_lines: u64,
     pub lines: Vec<VikerGitDiffLine>,
+    pub raw_patch: String,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -394,6 +404,28 @@ pub struct VikerGitStatus {
 pub struct VikerGitOperationReport {
     pub message: String,
     pub conflicts: Vec<String>,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct VikerGitCommitSummary {
+    pub oid: String,
+    pub short_oid: String,
+    pub summary: String,
+    pub author_name: Option<String>,
+    pub author_email: Option<String>,
+    pub time_seconds: i64,
+    pub decorations: Vec<String>,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct VikerGitChangeSnapshot {
+    pub repository_root: String,
+    pub head: Option<String>,
+    pub index_tree: Option<String>,
+    pub staged_signature: String,
+    pub unstaged_signature: String,
+    pub untracked_signature: String,
+    pub status_signature: String,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -563,6 +595,13 @@ enum WorkspacePendingKind {
 }
 
 #[uniffi::export]
+pub fn viker_git_discover_repository_root(path: String) -> Result<String, VikerError> {
+    Ok(core_git::discover_repository_root(path)?
+        .to_string_lossy()
+        .to_string())
+}
+
+#[uniffi::export]
 pub fn viker_git_status(path: String) -> Result<VikerGitStatus, VikerError> {
     Ok(git_status_from_core(core_git::repository_status(path)?))
 }
@@ -608,6 +647,41 @@ pub fn viker_git_diff_json(
             pathspecs,
             ..core_git::GitDiffOptions::default()
         },
+    )?)
+}
+
+#[uniffi::export]
+pub fn viker_git_diff_reference(
+    path: String,
+    reference: String,
+    context_lines: u64,
+    pathspecs: Vec<String>,
+    find_renames: bool,
+) -> Result<VikerGitDiff, VikerError> {
+    Ok(git_diff_from_core(core_git::repository_diff_reference(
+        path,
+        &reference,
+        checked_u32(context_lines, "context_lines")?,
+        &pathspecs,
+        find_renames,
+        core_git::GitDiffOptions::default().max_highlight_bytes,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_diff_reference_json(
+    path: String,
+    reference: String,
+    context_lines: u64,
+    pathspecs: Vec<String>,
+    find_renames: bool,
+) -> Result<String, VikerError> {
+    Ok(core_git::repository_diff_reference_json(
+        path,
+        &reference,
+        checked_u32(context_lines, "context_lines")?,
+        &pathspecs,
+        find_renames,
     )?)
 }
 
@@ -683,6 +757,73 @@ pub fn viker_git_unstage_hunk(
 }
 
 #[uniffi::export]
+pub fn viker_git_discard_file(
+    path: String,
+    file_path: String,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::discard_file(
+        path, &file_path,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_discard_hunk(
+    path: String,
+    file_path: String,
+    hunk_id: String,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::discard_hunk(
+        path, &file_path, &hunk_id,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_stage_line(
+    path: String,
+    file_path: String,
+    line_id: String,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::stage_line(
+        path, &file_path, &line_id,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_unstage_line(
+    path: String,
+    file_path: String,
+    line_id: String,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::unstage_line(
+        path, &file_path, &line_id,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_discard_line(
+    path: String,
+    file_path: String,
+    line_id: String,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::discard_line(
+        path, &file_path, &line_id,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_apply_patch(
+    path: String,
+    patch: String,
+    mode: VikerGitApplyPatchMode,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::apply_patch(
+        path,
+        &patch,
+        git_apply_patch_mode_to_core(mode),
+    )?))
+}
+
+#[uniffi::export]
 pub fn viker_git_delete_files(
     path: String,
     paths: Vec<String>,
@@ -731,6 +872,32 @@ pub fn viker_git_stash_push(
 }
 
 #[uniffi::export]
+pub fn viker_git_stash_file(
+    path: String,
+    file_path: String,
+    message: Option<String>,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::stash_file(
+        path,
+        &file_path,
+        message.as_deref(),
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_stash_patch(
+    path: String,
+    patch: String,
+    message: Option<String>,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::stash_patch(
+        path,
+        &patch,
+        message.as_deref(),
+    )?))
+}
+
+#[uniffi::export]
 pub fn viker_git_stash_apply(
     path: String,
     index: u64,
@@ -768,6 +935,25 @@ pub fn viker_git_rebase(
     Ok(git_report_from_core(core_git::rebase_onto(
         path, &upstream,
     )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_list_commits(
+    path: String,
+    limit: u64,
+    ref_name: Option<String>,
+) -> Result<Vec<VikerGitCommitSummary>, VikerError> {
+    Ok(
+        core_git::list_commits(path, checked_index(limit, "limit")?, ref_name.as_deref())?
+            .into_iter()
+            .map(git_commit_from_core)
+            .collect(),
+    )
+}
+
+#[uniffi::export]
+pub fn viker_git_change_snapshot(path: String) -> Result<VikerGitChangeSnapshot, VikerError> {
+    Ok(git_snapshot_from_core(core_git::change_snapshot(path)?))
 }
 
 #[uniffi::export]
@@ -2840,6 +3026,7 @@ fn git_diff_mode_to_core(mode: VikerGitDiffMode) -> core_git::GitDiffMode {
         VikerGitDiffMode::Worktree => core_git::GitDiffMode::Worktree,
         VikerGitDiffMode::Staged => core_git::GitDiffMode::Staged,
         VikerGitDiffMode::Head => core_git::GitDiffMode::Head,
+        VikerGitDiffMode::Reference => core_git::GitDiffMode::Reference,
     }
 }
 
@@ -2848,6 +3035,17 @@ fn git_diff_mode_from_core(mode: core_git::GitDiffMode) -> VikerGitDiffMode {
         core_git::GitDiffMode::Worktree => VikerGitDiffMode::Worktree,
         core_git::GitDiffMode::Staged => VikerGitDiffMode::Staged,
         core_git::GitDiffMode::Head => VikerGitDiffMode::Head,
+        core_git::GitDiffMode::Reference => VikerGitDiffMode::Reference,
+    }
+}
+
+fn git_apply_patch_mode_to_core(mode: VikerGitApplyPatchMode) -> core_git::GitApplyPatchMode {
+    match mode {
+        VikerGitApplyPatchMode::StageToIndex => core_git::GitApplyPatchMode::StageToIndex,
+        VikerGitApplyPatchMode::UnstageFromIndex => core_git::GitApplyPatchMode::UnstageFromIndex,
+        VikerGitApplyPatchMode::DiscardFromWorktree => {
+            core_git::GitApplyPatchMode::DiscardFromWorktree
+        }
     }
 }
 
@@ -2907,11 +3105,13 @@ fn git_hunk_from_core(hunk: core_git::GitDiffHunk) -> VikerGitDiffHunk {
         new_start: hunk.new_start as u64,
         new_lines: hunk.new_lines as u64,
         lines: hunk.lines.into_iter().map(git_line_from_core).collect(),
+        raw_patch: hunk.raw_patch,
     }
 }
 
 fn git_line_from_core(line: core_git::GitDiffLine) -> VikerGitDiffLine {
     VikerGitDiffLine {
+        id: line.id,
         old_line: line.old_line.map(u64::from),
         new_line: line.new_line.map(u64::from),
         kind: git_line_kind_from_core(line.kind),
@@ -2993,6 +3193,30 @@ fn git_report_from_core(report: core_git::GitOperationReport) -> VikerGitOperati
     VikerGitOperationReport {
         message: report.message,
         conflicts: report.conflicts,
+    }
+}
+
+fn git_commit_from_core(commit: core_git::GitCommitSummary) -> VikerGitCommitSummary {
+    VikerGitCommitSummary {
+        oid: commit.oid,
+        short_oid: commit.short_oid,
+        summary: commit.summary,
+        author_name: commit.author_name,
+        author_email: commit.author_email,
+        time_seconds: commit.time_seconds,
+        decorations: commit.decorations,
+    }
+}
+
+fn git_snapshot_from_core(snapshot: core_git::GitChangeSnapshot) -> VikerGitChangeSnapshot {
+    VikerGitChangeSnapshot {
+        repository_root: snapshot.repository_root,
+        head: snapshot.head,
+        index_tree: snapshot.index_tree,
+        staged_signature: snapshot.staged_signature,
+        unstaged_signature: snapshot.unstaged_signature,
+        untracked_signature: snapshot.untracked_signature,
+        status_signature: snapshot.status_signature,
     }
 }
 
@@ -3659,6 +3883,103 @@ mod tests {
         let path = std::env::temp_dir().join(format!("vikerkit-{name}-{unique}"));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn write_file(root: &Path, rel: &str, text: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn commit_all(repo: &git2::Repository, message: &str) {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("Viker", "viker@example.invalid").unwrap();
+        let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let parents = parent.iter().collect::<Vec<_>>();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn swift_exports_extended_git_review_apis() {
+        let root = temp_workspace("git-review");
+        let repo = git2::Repository::init(&root).unwrap();
+        write_file(&root, "notes.txt", "alpha\ncharlie\n");
+        commit_all(&repo, "initial");
+        write_file(&root, "notes.txt", "alpha\nbravo\ncharlie\n");
+
+        let root_path = root.to_string_lossy().to_string();
+        let nested = root.join("notes.txt").to_string_lossy().to_string();
+        assert_eq!(
+            PathBuf::from(viker_git_discover_repository_root(nested).unwrap())
+                .canonicalize()
+                .unwrap(),
+            root.canonicalize().unwrap()
+        );
+
+        let diff = viker_git_diff(
+            root_path.clone(),
+            VikerGitDiffMode::Worktree,
+            3,
+            vec!["notes.txt".to_string()],
+        )
+        .unwrap();
+        let hunk = &diff.files[0].hunks[0];
+        assert!(!hunk.raw_patch.is_empty());
+        let line_id = hunk
+            .lines
+            .iter()
+            .find(|line| line.kind == VikerGitLineKind::Addition && line.content == "bravo")
+            .unwrap()
+            .id
+            .clone();
+
+        viker_git_stage_line(root_path.clone(), "notes.txt".to_string(), line_id).unwrap();
+        let snapshot = viker_git_change_snapshot(root_path.clone()).unwrap();
+        assert!(!snapshot.staged_signature.is_empty());
+        let staged = viker_git_diff(
+            root_path.clone(),
+            VikerGitDiffMode::Staged,
+            3,
+            vec!["notes.txt".to_string()],
+        )
+        .unwrap();
+        assert_eq!(staged.files.len(), 1);
+        let staged_line_id = staged.files[0].hunks[0]
+            .lines
+            .iter()
+            .find(|line| line.kind == VikerGitLineKind::Addition && line.content == "bravo")
+            .unwrap()
+            .id
+            .clone();
+        viker_git_unstage_line(root_path.clone(), "notes.txt".to_string(), staged_line_id).unwrap();
+
+        let commits = viker_git_list_commits(root_path.clone(), 5, None).unwrap();
+        assert_eq!(commits[0].summary, "initial");
+
+        viker_git_stage_files(root_path.clone(), vec!["notes.txt".to_string()]).unwrap();
+        commit_all(&repo, "add bravo");
+        let head = repo.head().unwrap().target().unwrap().to_string();
+        let reference_diff =
+            viker_git_diff_reference(root_path.clone(), head, 3, Vec::new(), false).unwrap();
+        assert_eq!(reference_diff.mode, VikerGitDiffMode::Reference);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

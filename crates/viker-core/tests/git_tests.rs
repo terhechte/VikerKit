@@ -185,6 +185,221 @@ fn git_stage_and_unstage_hunks_operate_on_individual_patches() {
 }
 
 #[test]
+fn git_line_operations_stage_unstage_and_discard_single_diff_lines() {
+    let (project, repo) = temp_repo("line-ops");
+    write_file(&project.root, "notes.txt", "alpha\ncharlie\n");
+    commit_all(&repo, "initial");
+    write_file(&project.root, "notes.txt", "alpha\nbravo\ncharlie\n");
+
+    let worktree = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Worktree,
+            context_lines: 0,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    let line_id = worktree.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Addition && line.content == "bravo")
+        .unwrap()
+        .id
+        .clone();
+
+    git::stage_line(&project.root, "notes.txt", &line_id).unwrap();
+    let staged = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Staged,
+            context_lines: 0,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        staged.files[0].hunks[0]
+            .lines
+            .iter()
+            .any(|line| line.kind == GitLineKind::Addition && line.content == "bravo")
+    );
+    let worktree = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Worktree,
+            context_lines: 0,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(worktree.files.is_empty());
+
+    let staged_line_id = staged.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Addition && line.content == "bravo")
+        .unwrap()
+        .id
+        .clone();
+    git::unstage_line(&project.root, "notes.txt", &staged_line_id).unwrap();
+    let staged = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Staged,
+            context_lines: 0,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(staged.files.is_empty());
+
+    let worktree = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Worktree,
+            context_lines: 0,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    let line_id = worktree.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Addition && line.content == "bravo")
+        .unwrap()
+        .id
+        .clone();
+    git::discard_line(&project.root, "notes.txt", &line_id).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\ncharlie\n"
+    );
+}
+
+#[test]
+fn git_apply_patch_and_discard_file_cover_fallback_review_actions() {
+    let (project, repo) = temp_repo("patch-discard");
+    write_file(
+        &project.root,
+        "src/lib.rs",
+        "pub fn value() -> i32 {\n    1\n}\n",
+    );
+    commit_all(&repo, "initial");
+    write_file(
+        &project.root,
+        "src/lib.rs",
+        "pub fn value() -> i32 {\n    2\n}\n",
+    );
+
+    let worktree = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Worktree,
+            context_lines: 3,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    let patch = worktree.files[0].hunks[0].raw_patch.clone();
+    git::apply_patch(&project.root, &patch, git::GitApplyPatchMode::StageToIndex).unwrap();
+    let staged = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Staged,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(staged.files.len(), 1);
+
+    git::apply_patch(
+        &project.root,
+        &patch,
+        git::GitApplyPatchMode::UnstageFromIndex,
+    )
+    .unwrap();
+    let staged = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Staged,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(staged.files.is_empty());
+
+    git::discard_file(&project.root, "src/lib.rs").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("src/lib.rs")).unwrap(),
+        "pub fn value() -> i32 {\n    1\n}\n"
+    );
+
+    write_file(&project.root, "scratch.txt", "temporary\n");
+    git::discard_file(&project.root, "scratch.txt").unwrap();
+    assert!(!project.root.join("scratch.txt").exists());
+}
+
+#[test]
+fn git_reference_diffs_cover_branches_commits_and_stashes() {
+    let (project, repo) = temp_repo("reference-diff");
+    write_file(&project.root, "src/lib.rs", "pub fn value() -> i32 { 1 }\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "src/lib.rs", "pub fn value() -> i32 { 2 }\n");
+    commit_all(&repo, "feature change");
+    let feature_oid = repo.head().unwrap().target().unwrap().to_string();
+    git::checkout_branch(&project.root, "master").unwrap();
+
+    let branch_diff =
+        git::repository_diff_reference(&project.root, "HEAD...feature", 3, &[], true, 1_000_000)
+            .unwrap();
+    assert_eq!(branch_diff.mode, GitDiffMode::Reference);
+    assert_eq!(branch_diff.files[0].new_path.as_deref(), Some("src/lib.rs"));
+
+    let commit_diff =
+        git::repository_diff_reference(&project.root, &feature_oid, 3, &[], false, 1_000_000)
+            .unwrap();
+    assert_eq!(commit_diff.files[0].new_path.as_deref(), Some("src/lib.rs"));
+
+    write_file(&project.root, "src/lib.rs", "pub fn value() -> i32 { 3 }\n");
+    git::stash_push(&project.root, Some("stash change")).unwrap();
+    let stash_diff =
+        git::repository_diff_reference(&project.root, "stash@{0}", 3, &[], false, 1_000_000)
+            .unwrap();
+    assert_eq!(stash_diff.files[0].new_path.as_deref(), Some("src/lib.rs"));
+}
+
+#[test]
+fn git_commits_snapshot_and_selective_stash_are_exposed() {
+    let (project, repo) = temp_repo("commits-snapshot-stash");
+    write_file(&project.root, "a.txt", "one\n");
+    write_file(&project.root, "b.txt", "one\n");
+    commit_all(&repo, "initial");
+    write_file(&project.root, "a.txt", "two\n");
+    commit_all(&repo, "second");
+
+    let commits = git::list_commits(&project.root, 10, None).unwrap();
+    assert_eq!(commits.len(), 2);
+    assert_eq!(commits[0].summary, "second");
+    assert!(commits[0].decorations.iter().any(|name| name == "master"));
+
+    let before = git::change_snapshot(&project.root).unwrap();
+    write_file(&project.root, "a.txt", "three\n");
+    let after = git::change_snapshot(&project.root).unwrap();
+    assert_ne!(before.status_signature, after.status_signature);
+
+    write_file(&project.root, "b.txt", "two\n");
+    git::stash_file(&project.root, "a.txt", Some("stash only a")).unwrap();
+    let status = git::repository_status(&project.root).unwrap();
+    assert!(status.files.iter().all(|file| file.path != "a.txt"));
+    assert!(status.files.iter().any(|file| file.path == "b.txt"));
+    assert_eq!(status.stashes.len(), 1);
+    assert!(status.stashes[0].message.contains("stash only a"));
+}
+
+#[test]
 fn git_branch_and_stash_operations_are_exposed() {
     let (project, repo) = temp_repo("branches-stash");
     write_file(&project.root, "src/lib.rs", "fn answer() -> i32 { 1 }\n");

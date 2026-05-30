@@ -13,6 +13,9 @@ serde_json.workspace = true
 tokio.workspace = true
 uniffi = { workspace = true, features = ["cli"] }
 
+[dev-dependencies]
+git2.workspace = true
+
 [lib]
 name = "viker_swift"
 path = "src/lib.rs"
