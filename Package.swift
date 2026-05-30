@@ -31,8 +31,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "VikerKitFFI",
-            url: "https://github.com/terhechte/VikerKit/releases/download/0.1.6/VikerKitFFI.xcframework.zip",
-            checksum: "49ce3e7ee6d9929b31d7cf6d1b7f1513af42bc663859e0f01b2614b1d5a06068"
+            url: "https://github.com/terhechte/VikerKit/releases/download/0.1.7/VikerKitFFI.xcframework.zip",
+            checksum: "4d07fdf408b60721050420e0fec99e04337bac76472e3d2eb04231778e525bb8"
         )
     ]
 )
