@@ -27,6 +27,17 @@ fn temp_repo(name: &str) -> (TempRepo, Repository) {
     (TempRepo { root }, repo)
 }
 
+fn temp_dir(name: &str) -> TempRepo {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("viker-git-{name}-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    TempRepo { root }
+}
+
 fn write_file(root: &Path, rel: &str, text: &str) {
     let path = root.join(rel);
     if let Some(parent) = path.parent() {
@@ -397,6 +408,78 @@ fn git_commits_snapshot_and_selective_stash_are_exposed() {
     assert!(status.files.iter().any(|file| file.path == "b.txt"));
     assert_eq!(status.stashes.len(), 1);
     assert!(status.stashes[0].message.contains("stash only a"));
+}
+
+#[test]
+fn git_commit_push_ignored_paths_and_remotes_are_exposed() {
+    let (project, repo) = temp_repo("commit-push-ignored-remotes");
+    write_file(&project.root, ".gitignore", "target/\n*.log\n");
+    write_file(&project.root, "tracked.txt", "one\n");
+    commit_all(&repo, "initial");
+
+    write_file(&project.root, "tracked.txt", "two\n");
+    git::stage_files(&project.root, &["tracked.txt".to_string()]).unwrap();
+    let commit = git::create_commit(
+        &project.root,
+        "commit from api",
+        Some("Viker Author"),
+        Some("author@example.invalid"),
+    )
+    .unwrap();
+    assert_eq!(commit.summary, "commit from api");
+    assert_eq!(commit.author_name.as_deref(), Some("Viker Author"));
+    assert_eq!(
+        repo.head().unwrap().target().unwrap().to_string(),
+        commit.oid
+    );
+    assert!(git::create_commit(&project.root, "empty", None, None).is_err());
+
+    std::fs::create_dir_all(project.root.join("target")).unwrap();
+    write_file(&project.root, "target/cache.bin", "ignored\n");
+    write_file(&project.root, "debug.log", "ignored\n");
+    write_file(&project.root, "visible.txt", "visible\n");
+    let ignored = git::ignored_paths(&project.root).unwrap();
+    assert!(
+        ignored
+            .iter()
+            .any(|path| path.path == "debug.log" && !path.directory)
+    );
+    assert!(
+        ignored
+            .iter()
+            .any(|path| path.path == "target/" && path.directory)
+    );
+    assert!(ignored.iter().all(|path| path.path != "visible.txt"));
+
+    let remote_dir = temp_dir("commit-push-ignored-remotes-bare");
+    Repository::init_bare(&remote_dir.root).unwrap();
+    repo.remote("origin", remote_dir.root.to_str().unwrap())
+        .unwrap();
+    let report = git::push(&project.root, Some("origin"), Some("master"), true).unwrap();
+    assert!(report.message.contains("pushed master to origin"));
+
+    let remote_repo = Repository::open_bare(&remote_dir.root).unwrap();
+    assert_eq!(
+        remote_repo
+            .find_reference("refs/heads/master")
+            .unwrap()
+            .target()
+            .unwrap(),
+        repo.head().unwrap().target().unwrap()
+    );
+    let remotes = git::repository_remotes(&project.root).unwrap();
+    let origin = remotes
+        .iter()
+        .find(|remote| remote.name == "origin")
+        .unwrap();
+    assert_eq!(origin.url.as_deref(), remote_dir.root.to_str());
+    assert!(
+        origin
+            .upstreams
+            .iter()
+            .any(|upstream| upstream.local_branch == "master"
+                && upstream.remote_branch.as_deref() == Some("master"))
+    );
 }
 
 #[test]

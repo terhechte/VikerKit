@@ -5,9 +5,11 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result, bail};
 use git2::build::CheckoutBuilder;
+use git2::string_array::StringArray;
 use git2::{
-    ApplyLocation, ApplyOptions, BranchType, Delta, DiffFindOptions, DiffOptions, ObjectType, Oid,
-    Repository, Signature, Sort, Status, StatusOptions,
+    ApplyLocation, ApplyOptions, BranchType, Config, Cred, CredentialType, Delta, DiffFindOptions,
+    DiffOptions, ObjectType, Oid, PushOptions, RemoteCallbacks, Repository, Signature, Sort,
+    Status, StatusOptions,
 };
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
@@ -133,6 +135,32 @@ pub struct GitChangeSnapshot {
     pub unstaged_signature: String,
     pub untracked_signature: String,
     pub status_signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitIgnoredPath {
+    pub path: String,
+    pub directory: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRemoteUpstream {
+    pub local_branch: String,
+    pub remote_branch: Option<String>,
+    pub upstream_ref: Option<String>,
+    pub merge_ref: Option<String>,
+    pub ahead: Option<usize>,
+    pub behind: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRemote {
+    pub name: String,
+    pub url: Option<String>,
+    pub push_url: Option<String>,
+    pub fetch_refspecs: Vec<String>,
+    pub push_refspecs: Vec<String>,
+    pub upstreams: Vec<GitRemoteUpstream>,
 }
 
 impl Default for GitDiffOptions {
@@ -316,6 +344,72 @@ pub fn repository_status(path: impl AsRef<Path>) -> Result<GitRepositoryStatus> 
 pub fn repository_branches(path: impl AsRef<Path>) -> Result<Vec<GitBranch>> {
     let repo = Repository::discover(path.as_ref())?;
     repository_branches_from_repo(&repo)
+}
+
+pub fn repository_remotes(path: impl AsRef<Path>) -> Result<Vec<GitRemote>> {
+    let repo = Repository::discover(path.as_ref())?;
+    let upstreams = repository_remote_upstreams(&repo)?;
+    let remote_names = repo.remotes()?;
+    let mut remotes = Vec::new();
+    for name in remote_names.iter().filter_map(|name| name) {
+        let remote = repo.find_remote(name)?;
+        let mut upstreams = upstreams.get(name).cloned().unwrap_or_default();
+        upstreams.sort_by(|left, right| {
+            left.local_branch
+                .to_ascii_lowercase()
+                .cmp(&right.local_branch.to_ascii_lowercase())
+        });
+        remotes.push(GitRemote {
+            name: name.to_string(),
+            url: remote.url().map(ToOwned::to_owned),
+            push_url: remote.pushurl().map(ToOwned::to_owned),
+            fetch_refspecs: string_array_to_vec(remote.fetch_refspecs()?),
+            push_refspecs: string_array_to_vec(remote.push_refspecs()?),
+            upstreams,
+        });
+    }
+    remotes.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
+    Ok(remotes)
+}
+
+pub fn ignored_paths(path: impl AsRef<Path>) -> Result<Vec<GitIgnoredPath>> {
+    let repo = Repository::discover(path.as_ref())?;
+    let root = repository_root(&repo)?;
+    let mut status_options = StatusOptions::new();
+    status_options
+        .include_ignored(true)
+        .include_untracked(true)
+        .recurse_ignored_dirs(false)
+        .recurse_untracked_dirs(false);
+    let statuses = repo.statuses(Some(&mut status_options))?;
+    let mut ignored = Vec::new();
+    for entry in statuses.iter() {
+        if !entry.status().contains(Status::IGNORED) {
+            continue;
+        }
+        let Some(mut path) = status_path(&entry) else {
+            continue;
+        };
+        let is_dir = path.ends_with('/') || root.join(path.trim_end_matches('/')).is_dir();
+        if is_dir && !path.ends_with('/') {
+            path.push('/');
+        }
+        ignored.push(GitIgnoredPath {
+            path,
+            directory: is_dir,
+        });
+    }
+    ignored.sort_by(|left, right| {
+        left.path
+            .to_ascii_lowercase()
+            .cmp(&right.path.to_ascii_lowercase())
+    });
+    ignored.dedup_by(|left, right| left.path == right.path);
+    Ok(ignored)
 }
 
 pub fn repository_diff(path: impl AsRef<Path>, options: GitDiffOptions) -> Result<GitDiff> {
@@ -698,6 +792,111 @@ pub fn checkout_branch(path: impl AsRef<Path>, name: &str) -> Result<GitOperatio
     Ok(report(format!("checked out {name}")))
 }
 
+pub fn create_commit(
+    path: impl AsRef<Path>,
+    message: &str,
+    author_name: Option<&str>,
+    author_email: Option<&str>,
+) -> Result<GitCommitSummary> {
+    let repo = Repository::discover(path.as_ref())?;
+    let message = message.trim();
+    if message.is_empty() {
+        bail!("commit message is required");
+    }
+
+    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+    let mut index = repo.index()?;
+    let tree_id = index.write_tree()?;
+    if let Some(parent) = parent.as_ref() {
+        if parent.tree_id() == tree_id {
+            bail!("nothing to commit");
+        }
+    } else if index.len() == 0 {
+        bail!("nothing to commit");
+    }
+    let tree = repo.find_tree(tree_id)?;
+    let committer = repo_signature(&repo)?;
+    let author = match (
+        author_name.map(str::trim).filter(|name| !name.is_empty()),
+        author_email
+            .map(str::trim)
+            .filter(|email| !email.is_empty()),
+    ) {
+        (Some(name), Some(email)) => Signature::now(name, email)?,
+        _ => committer.clone(),
+    };
+    let parents = parent.iter().collect::<Vec<_>>();
+    let oid = repo.commit(Some("HEAD"), &author, &committer, message, &tree, &parents)?;
+    let commit = repo.find_commit(oid)?;
+    let decorations = commit_decorations(&repo)?;
+    Ok(commit_summary_from_commit(&commit, &decorations))
+}
+
+pub fn push(
+    path: impl AsRef<Path>,
+    remote: Option<&str>,
+    branch: Option<&str>,
+    set_upstream: bool,
+) -> Result<GitOperationReport> {
+    let repo = Repository::discover(path.as_ref())?;
+    let branch = branch
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(normalize_local_branch_name)
+        .transpose()?
+        .unwrap_or(current_local_branch_name(&repo)?);
+    let local_refname = format!("refs/heads/{branch}");
+    let local_ref = repo
+        .find_reference(&local_refname)
+        .with_context(|| format!("local branch {branch} not found"))?;
+    let local_target = local_ref
+        .target()
+        .with_context(|| format!("local branch {branch} has no target commit"))?;
+    let remote_name = remote
+        .map(str::trim)
+        .filter(|remote| !remote.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(default_push_remote(&repo, &branch)?);
+    let mut remote = repo
+        .find_remote(&remote_name)
+        .with_context(|| format!("remote {remote_name} not found"))?;
+    let refspec = format!("{local_refname}:{local_refname}");
+    let mut push_errors = Vec::new();
+    {
+        let config = repo.config().ok();
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(move |url, username, allowed| {
+            credential_for_push(config.as_ref(), url, username, allowed)
+        });
+        callbacks.push_update_reference(|refname, status| {
+            if let Some(status) = status {
+                push_errors.push(format!("{refname}: {status}"));
+            }
+            Ok(())
+        });
+        let mut options = PushOptions::new();
+        options.remote_callbacks(callbacks);
+        remote.push(&[refspec.as_str()], Some(&mut options))?;
+    }
+    if !push_errors.is_empty() {
+        bail!("push rejected: {}", push_errors.join("; "));
+    }
+
+    if set_upstream {
+        let tracking_ref = format!("refs/remotes/{remote_name}/{branch}");
+        repo.reference(
+            &tracking_ref,
+            local_target,
+            true,
+            &format!("update tracking ref after push to {remote_name}"),
+        )?;
+        let mut branch_ref = repo.find_branch(&branch, BranchType::Local)?;
+        branch_ref.set_upstream(Some(&format!("{remote_name}/{branch}")))?;
+    }
+
+    Ok(report(format!("pushed {branch} to {remote_name}")))
+}
+
 pub fn stash_push(path: impl AsRef<Path>, message: Option<&str>) -> Result<GitOperationReport> {
     let mut repo = Repository::discover(path.as_ref())?;
     let signature = repo_signature(&repo)?;
@@ -898,20 +1097,7 @@ pub fn list_commits(
     for oid in revwalk.take(limit) {
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
-        let summary = commit
-            .summary()
-            .or_else(|| commit.message())
-            .unwrap_or("")
-            .to_string();
-        commits.push(GitCommitSummary {
-            oid: oid.to_string(),
-            short_oid: oid.to_string().chars().take(7).collect(),
-            summary,
-            author_name: commit.author().name().map(ToOwned::to_owned),
-            author_email: commit.author().email().map(ToOwned::to_owned),
-            time_seconds: commit.time().seconds(),
-            decorations: decorations.get(&oid).cloned().unwrap_or_default(),
-        });
+        commits.push(commit_summary_from_commit(&commit, &decorations));
     }
     Ok(commits)
 }
@@ -1450,6 +1636,156 @@ fn repository_stashes_from_repo(repo: &mut Repository) -> Result<Vec<GitStash>> 
     Ok(stashes)
 }
 
+fn repository_remote_upstreams(
+    repo: &Repository,
+) -> Result<HashMap<String, Vec<GitRemoteUpstream>>> {
+    let mut upstreams: HashMap<String, Vec<GitRemoteUpstream>> = HashMap::new();
+    for branch in repo.branches(Some(BranchType::Local))? {
+        let (branch, _) = branch?;
+        let Some(local_branch) = branch.name()?.map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(local_refname) = branch.get().name().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(remote_name) = repo
+            .branch_upstream_remote(&local_refname)
+            .ok()
+            .and_then(|remote| remote.as_str().map(ToOwned::to_owned))
+        else {
+            continue;
+        };
+        let merge_ref = repo
+            .branch_upstream_merge(&local_refname)
+            .ok()
+            .and_then(|merge| merge.as_str().map(ToOwned::to_owned));
+        let upstream = branch.upstream().ok();
+        let upstream_ref = upstream
+            .as_ref()
+            .and_then(|upstream| upstream.get().name().map(ToOwned::to_owned));
+        let remote_branch =
+            remote_branch_from(&remote_name, upstream_ref.as_deref(), merge_ref.as_deref());
+        let (ahead, behind) = match (
+            branch.get().target(),
+            upstream
+                .as_ref()
+                .and_then(|upstream| upstream.get().target()),
+        ) {
+            (Some(local), Some(remote)) => match repo.graph_ahead_behind(local, remote) {
+                Ok((ahead, behind)) => (Some(ahead), Some(behind)),
+                Err(_) => (None, None),
+            },
+            _ => (None, None),
+        };
+        upstreams
+            .entry(remote_name)
+            .or_default()
+            .push(GitRemoteUpstream {
+                local_branch,
+                remote_branch,
+                upstream_ref,
+                merge_ref,
+                ahead,
+                behind,
+            });
+    }
+    Ok(upstreams)
+}
+
+fn remote_branch_from(
+    remote_name: &str,
+    upstream_ref: Option<&str>,
+    merge_ref: Option<&str>,
+) -> Option<String> {
+    upstream_ref
+        .and_then(|upstream| {
+            upstream
+                .strip_prefix(&format!("refs/remotes/{remote_name}/"))
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            merge_ref.and_then(|merge| merge.strip_prefix("refs/heads/").map(ToOwned::to_owned))
+        })
+}
+
+fn string_array_to_vec(values: StringArray) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|value| value.map(ToOwned::to_owned))
+        .collect()
+}
+
+fn current_local_branch_name(repo: &Repository) -> Result<String> {
+    let head = repo.head()?;
+    if !head.is_branch() {
+        bail!("cannot infer branch while HEAD is detached");
+    }
+    head.shorthand()
+        .map(ToOwned::to_owned)
+        .context("current branch has no shorthand name")
+}
+
+fn normalize_local_branch_name(branch: &str) -> Result<String> {
+    let branch = branch
+        .trim()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch.trim());
+    if branch.is_empty() {
+        bail!("branch name is required");
+    }
+    Ok(branch.to_string())
+}
+
+fn default_push_remote(repo: &Repository, branch: &str) -> Result<String> {
+    let refname = format!("refs/heads/{branch}");
+    if let Some(remote) = repo
+        .branch_upstream_remote(&refname)
+        .ok()
+        .and_then(|remote| remote.as_str().map(ToOwned::to_owned))
+    {
+        return Ok(remote);
+    }
+
+    let remotes = repo
+        .remotes()?
+        .iter()
+        .filter_map(|remote| remote.map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    if remotes.iter().any(|remote| remote == "origin") {
+        return Ok("origin".to_string());
+    }
+    if remotes.len() == 1 {
+        return Ok(remotes[0].clone());
+    }
+    bail!("remote is required");
+}
+
+fn credential_for_push(
+    config: Option<&Config>,
+    url: &str,
+    username: Option<&str>,
+    allowed: CredentialType,
+) -> std::result::Result<Cred, git2::Error> {
+    if allowed.is_user_pass_plaintext()
+        && let Some(config) = config
+        && let Ok(credential) = Cred::credential_helper(config, url, username)
+    {
+        return Ok(credential);
+    }
+    if allowed.is_ssh_key() {
+        return Cred::ssh_key_from_agent(username.unwrap_or("git"));
+    }
+    if allowed.is_username()
+        && let Some(username) = username
+    {
+        return Cred::username(username);
+    }
+    if allowed.is_default() {
+        return Cred::default();
+    }
+    Cred::default()
+}
+
 fn head_tree(repo: &Repository) -> Result<git2::Tree<'_>> {
     Ok(repo.head()?.peel_to_tree()?)
 }
@@ -1632,6 +1968,27 @@ fn commit_decorations(repo: &Repository) -> Result<HashMap<Oid, Vec<String>>> {
     Ok(decorations)
 }
 
+fn commit_summary_from_commit(
+    commit: &git2::Commit<'_>,
+    decorations: &HashMap<Oid, Vec<String>>,
+) -> GitCommitSummary {
+    let oid = commit.id();
+    let summary = commit
+        .summary()
+        .or_else(|| commit.message())
+        .unwrap_or("")
+        .to_string();
+    GitCommitSummary {
+        oid: oid.to_string(),
+        short_oid: oid.to_string().chars().take(7).collect(),
+        summary,
+        author_name: commit.author().name().map(ToOwned::to_owned),
+        author_email: commit.author().email().map(ToOwned::to_owned),
+        time_seconds: commit.time().seconds(),
+        decorations: decorations.get(&oid).cloned().unwrap_or_default(),
+    }
+}
+
 fn file_metadata_signature(root: &Path, path: &str) -> String {
     let Ok(metadata) = std::fs::metadata(root.join(path)) else {
         return "missing".to_string();
@@ -1754,8 +2111,10 @@ fn repo_relative_paths(repo: &Repository, paths: &[String]) -> Result<Vec<PathBu
         .collect()
 }
 
-fn repo_signature(_repo: &Repository) -> Result<Signature<'static>> {
-    Signature::now("Viker", "viker@example.invalid").map_err(Into::into)
+fn repo_signature(repo: &Repository) -> Result<Signature<'static>> {
+    repo.signature()
+        .or_else(|_| Signature::now("Viker", "viker@example.invalid"))
+        .map_err(Into::into)
 }
 
 fn annotated_commit<'repo>(

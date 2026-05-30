@@ -2660,6 +2660,60 @@ public func FfiConverterTypeVikerGitFileStatus_lower(_ value: VikerGitFileStatus
 }
 
 
+public struct VikerGitIgnoredPath: Equatable, Hashable {
+    public let path: String
+    public let directory: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(path: String, directory: Bool) {
+        self.path = path
+        self.directory = directory
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VikerGitIgnoredPath: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVikerGitIgnoredPath: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VikerGitIgnoredPath {
+        return
+            try VikerGitIgnoredPath(
+                path: FfiConverterString.read(from: &buf), 
+                directory: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VikerGitIgnoredPath, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterBool.write(value.directory, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitIgnoredPath_lift(_ buf: RustBuffer) throws -> VikerGitIgnoredPath {
+    return try FfiConverterTypeVikerGitIgnoredPath.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitIgnoredPath_lower(_ value: VikerGitIgnoredPath) -> RustBuffer {
+    return FfiConverterTypeVikerGitIgnoredPath.lower(value)
+}
+
+
 public struct VikerGitOperationReport: Equatable, Hashable {
     public let message: String
     public let conflicts: [String]
@@ -2773,6 +2827,146 @@ public func FfiConverterTypeVikerGitPatchHighlight_lift(_ buf: RustBuffer) throw
 #endif
 public func FfiConverterTypeVikerGitPatchHighlight_lower(_ value: VikerGitPatchHighlight) -> RustBuffer {
     return FfiConverterTypeVikerGitPatchHighlight.lower(value)
+}
+
+
+public struct VikerGitRemote: Equatable, Hashable {
+    public let name: String
+    public let url: String?
+    public let pushUrl: String?
+    public let fetchRefspecs: [String]
+    public let pushRefspecs: [String]
+    public let upstreams: [VikerGitRemoteUpstream]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, url: String?, pushUrl: String?, fetchRefspecs: [String], pushRefspecs: [String], upstreams: [VikerGitRemoteUpstream]) {
+        self.name = name
+        self.url = url
+        self.pushUrl = pushUrl
+        self.fetchRefspecs = fetchRefspecs
+        self.pushRefspecs = pushRefspecs
+        self.upstreams = upstreams
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VikerGitRemote: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVikerGitRemote: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VikerGitRemote {
+        return
+            try VikerGitRemote(
+                name: FfiConverterString.read(from: &buf), 
+                url: FfiConverterOptionString.read(from: &buf), 
+                pushUrl: FfiConverterOptionString.read(from: &buf), 
+                fetchRefspecs: FfiConverterSequenceString.read(from: &buf), 
+                pushRefspecs: FfiConverterSequenceString.read(from: &buf), 
+                upstreams: FfiConverterSequenceTypeVikerGitRemoteUpstream.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VikerGitRemote, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.url, into: &buf)
+        FfiConverterOptionString.write(value.pushUrl, into: &buf)
+        FfiConverterSequenceString.write(value.fetchRefspecs, into: &buf)
+        FfiConverterSequenceString.write(value.pushRefspecs, into: &buf)
+        FfiConverterSequenceTypeVikerGitRemoteUpstream.write(value.upstreams, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitRemote_lift(_ buf: RustBuffer) throws -> VikerGitRemote {
+    return try FfiConverterTypeVikerGitRemote.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitRemote_lower(_ value: VikerGitRemote) -> RustBuffer {
+    return FfiConverterTypeVikerGitRemote.lower(value)
+}
+
+
+public struct VikerGitRemoteUpstream: Equatable, Hashable {
+    public let localBranch: String
+    public let remoteBranch: String?
+    public let upstreamRef: String?
+    public let mergeRef: String?
+    public let ahead: UInt64?
+    public let behind: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(localBranch: String, remoteBranch: String?, upstreamRef: String?, mergeRef: String?, ahead: UInt64?, behind: UInt64?) {
+        self.localBranch = localBranch
+        self.remoteBranch = remoteBranch
+        self.upstreamRef = upstreamRef
+        self.mergeRef = mergeRef
+        self.ahead = ahead
+        self.behind = behind
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VikerGitRemoteUpstream: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVikerGitRemoteUpstream: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VikerGitRemoteUpstream {
+        return
+            try VikerGitRemoteUpstream(
+                localBranch: FfiConverterString.read(from: &buf), 
+                remoteBranch: FfiConverterOptionString.read(from: &buf), 
+                upstreamRef: FfiConverterOptionString.read(from: &buf), 
+                mergeRef: FfiConverterOptionString.read(from: &buf), 
+                ahead: FfiConverterOptionUInt64.read(from: &buf), 
+                behind: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VikerGitRemoteUpstream, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.localBranch, into: &buf)
+        FfiConverterOptionString.write(value.remoteBranch, into: &buf)
+        FfiConverterOptionString.write(value.upstreamRef, into: &buf)
+        FfiConverterOptionString.write(value.mergeRef, into: &buf)
+        FfiConverterOptionUInt64.write(value.ahead, into: &buf)
+        FfiConverterOptionUInt64.write(value.behind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitRemoteUpstream_lift(_ buf: RustBuffer) throws -> VikerGitRemoteUpstream {
+    return try FfiConverterTypeVikerGitRemoteUpstream.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitRemoteUpstream_lower(_ value: VikerGitRemoteUpstream) -> RustBuffer {
+    return FfiConverterTypeVikerGitRemoteUpstream.lower(value)
 }
 
 
@@ -5969,6 +6163,31 @@ fileprivate struct FfiConverterSequenceTypeVikerGitFileStatus: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeVikerGitIgnoredPath: FfiConverterRustBuffer {
+    typealias SwiftType = [VikerGitIgnoredPath]
+
+    public static func write(_ value: [VikerGitIgnoredPath], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeVikerGitIgnoredPath.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VikerGitIgnoredPath] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [VikerGitIgnoredPath]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeVikerGitIgnoredPath.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeVikerGitPatchHighlight: FfiConverterRustBuffer {
     typealias SwiftType = [VikerGitPatchHighlight]
 
@@ -5986,6 +6205,56 @@ fileprivate struct FfiConverterSequenceTypeVikerGitPatchHighlight: FfiConverterR
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeVikerGitPatchHighlight.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeVikerGitRemote: FfiConverterRustBuffer {
+    typealias SwiftType = [VikerGitRemote]
+
+    public static func write(_ value: [VikerGitRemote], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeVikerGitRemote.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VikerGitRemote] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [VikerGitRemote]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeVikerGitRemote.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeVikerGitRemoteUpstream: FfiConverterRustBuffer {
+    typealias SwiftType = [VikerGitRemoteUpstream]
+
+    public static func write(_ value: [VikerGitRemoteUpstream], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeVikerGitRemoteUpstream.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VikerGitRemoteUpstream] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [VikerGitRemoteUpstream]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeVikerGitRemoteUpstream.read(from: &buf))
         }
         return seq
     }
@@ -6279,6 +6548,16 @@ public func vikerGitCheckoutBranch(path: String, name: String)throws  -> VikerGi
     )
 })
 }
+public func vikerGitCommit(path: String, message: String, authorName: String?, authorEmail: String?)throws  -> VikerGitCommitSummary  {
+    return try  FfiConverterTypeVikerGitCommitSummary_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_commit(
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(message),
+        FfiConverterOptionString.lower(authorName),
+        FfiConverterOptionString.lower(authorEmail),$0
+    )
+})
+}
 public func vikerGitCreateBranch(path: String, name: String)throws  -> VikerGitOperationReport  {
     return try  FfiConverterTypeVikerGitOperationReport_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
     uniffi_viker_swift_fn_func_viker_git_create_branch(
@@ -6370,6 +6649,13 @@ public func vikerGitDiscoverRepositoryRoot(path: String)throws  -> String  {
     )
 })
 }
+public func vikerGitIgnoredPaths(path: String)throws  -> [VikerGitIgnoredPath]  {
+    return try  FfiConverterSequenceTypeVikerGitIgnoredPath.lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_ignored_paths(
+        FfiConverterString.lower(path),$0
+    )
+})
+}
 public func vikerGitListCommits(path: String, limit: UInt64, refName: String?)throws  -> [VikerGitCommitSummary]  {
     return try  FfiConverterSequenceTypeVikerGitCommitSummary.lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
     uniffi_viker_swift_fn_func_viker_git_list_commits(
@@ -6387,11 +6673,28 @@ public func vikerGitMerge(path: String, branch: String)throws  -> VikerGitOperat
     )
 })
 }
+public func vikerGitPush(path: String, remote: String?, branch: String?, setUpstream: Bool)throws  -> VikerGitOperationReport  {
+    return try  FfiConverterTypeVikerGitOperationReport_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_push(
+        FfiConverterString.lower(path),
+        FfiConverterOptionString.lower(remote),
+        FfiConverterOptionString.lower(branch),
+        FfiConverterBool.lower(setUpstream),$0
+    )
+})
+}
 public func vikerGitRebase(path: String, upstream: String)throws  -> VikerGitOperationReport  {
     return try  FfiConverterTypeVikerGitOperationReport_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
     uniffi_viker_swift_fn_func_viker_git_rebase(
         FfiConverterString.lower(path),
         FfiConverterString.lower(upstream),$0
+    )
+})
+}
+public func vikerGitRemotes(path: String)throws  -> [VikerGitRemote]  {
+    return try  FfiConverterSequenceTypeVikerGitRemote.lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_remotes(
+        FfiConverterString.lower(path),$0
     )
 })
 }
@@ -6552,6 +6855,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_viker_swift_checksum_func_viker_git_checkout_branch() != 37737) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_viker_swift_checksum_func_viker_git_commit() != 64786) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_viker_swift_checksum_func_viker_git_create_branch() != 50474) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6582,13 +6888,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_viker_swift_checksum_func_viker_git_discover_repository_root() != 45089) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_viker_swift_checksum_func_viker_git_ignored_paths() != 51390) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_viker_swift_checksum_func_viker_git_list_commits() != 25336) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_viker_swift_checksum_func_viker_git_merge() != 13207) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_viker_swift_checksum_func_viker_git_push() != 7079) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_viker_swift_checksum_func_viker_git_rebase() != 5297) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_viker_swift_checksum_func_viker_git_remotes() != 16439) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_viker_swift_checksum_func_viker_git_stage_files() != 62969) {

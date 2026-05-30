@@ -429,6 +429,32 @@ pub struct VikerGitChangeSnapshot {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+pub struct VikerGitIgnoredPath {
+    pub path: String,
+    pub directory: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct VikerGitRemoteUpstream {
+    pub local_branch: String,
+    pub remote_branch: Option<String>,
+    pub upstream_ref: Option<String>,
+    pub merge_ref: Option<String>,
+    pub ahead: Option<u64>,
+    pub behind: Option<u64>,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct VikerGitRemote {
+    pub name: String,
+    pub url: Option<String>,
+    pub push_url: Option<String>,
+    pub fetch_refspecs: Vec<String>,
+    pub push_refspecs: Vec<String>,
+    pub upstreams: Vec<VikerGitRemoteUpstream>,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
 pub struct VikerFileSearchResult {
     pub path: String,
     pub score: i64,
@@ -611,6 +637,22 @@ pub fn viker_git_branches(path: String) -> Result<Vec<VikerGitBranch>, VikerErro
     Ok(core_git::repository_branches(path)?
         .into_iter()
         .map(git_branch_from_core)
+        .collect())
+}
+
+#[uniffi::export]
+pub fn viker_git_remotes(path: String) -> Result<Vec<VikerGitRemote>, VikerError> {
+    Ok(core_git::repository_remotes(path)?
+        .into_iter()
+        .map(git_remote_from_core)
+        .collect())
+}
+
+#[uniffi::export]
+pub fn viker_git_ignored_paths(path: String) -> Result<Vec<VikerGitIgnoredPath>, VikerError> {
+    Ok(core_git::ignored_paths(path)?
+        .into_iter()
+        .map(git_ignored_path_from_core)
         .collect())
 }
 
@@ -846,6 +888,36 @@ pub fn viker_git_checkout_branch(
 ) -> Result<VikerGitOperationReport, VikerError> {
     Ok(git_report_from_core(core_git::checkout_branch(
         path, &name,
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_commit(
+    path: String,
+    message: String,
+    author_name: Option<String>,
+    author_email: Option<String>,
+) -> Result<VikerGitCommitSummary, VikerError> {
+    Ok(git_commit_from_core(core_git::create_commit(
+        path,
+        &message,
+        author_name.as_deref(),
+        author_email.as_deref(),
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_push(
+    path: String,
+    remote: Option<String>,
+    branch: Option<String>,
+    set_upstream: bool,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::push(
+        path,
+        remote.as_deref(),
+        branch.as_deref(),
+        set_upstream,
     )?))
 }
 
@@ -3220,6 +3292,39 @@ fn git_snapshot_from_core(snapshot: core_git::GitChangeSnapshot) -> VikerGitChan
     }
 }
 
+fn git_ignored_path_from_core(path: core_git::GitIgnoredPath) -> VikerGitIgnoredPath {
+    VikerGitIgnoredPath {
+        path: path.path,
+        directory: path.directory,
+    }
+}
+
+fn git_remote_from_core(remote: core_git::GitRemote) -> VikerGitRemote {
+    VikerGitRemote {
+        name: remote.name,
+        url: remote.url,
+        push_url: remote.push_url,
+        fetch_refspecs: remote.fetch_refspecs,
+        push_refspecs: remote.push_refspecs,
+        upstreams: remote
+            .upstreams
+            .into_iter()
+            .map(git_remote_upstream_from_core)
+            .collect(),
+    }
+}
+
+fn git_remote_upstream_from_core(upstream: core_git::GitRemoteUpstream) -> VikerGitRemoteUpstream {
+    VikerGitRemoteUpstream {
+        local_branch: upstream.local_branch,
+        remote_branch: upstream.remote_branch,
+        upstream_ref: upstream.upstream_ref,
+        merge_ref: upstream.merge_ref,
+        ahead: upstream.ahead.map(|ahead| ahead as u64),
+        behind: upstream.behind.map(|behind| behind as u64),
+    }
+}
+
 fn file_search_result_from_core(result: core_search::FileSearchResult) -> VikerFileSearchResult {
     VikerFileSearchResult {
         path: result.path,
@@ -3973,12 +4078,59 @@ mod tests {
         assert_eq!(commits[0].summary, "initial");
 
         viker_git_stage_files(root_path.clone(), vec!["notes.txt".to_string()]).unwrap();
-        commit_all(&repo, "add bravo");
-        let head = repo.head().unwrap().target().unwrap().to_string();
+        let commit =
+            viker_git_commit(root_path.clone(), "add bravo".to_string(), None, None).unwrap();
+        assert_eq!(commit.summary, "add bravo");
+        let head = commit.oid.clone();
         let reference_diff =
             viker_git_diff_reference(root_path.clone(), head, 3, Vec::new(), false).unwrap();
         assert_eq!(reference_diff.mode, VikerGitDiffMode::Reference);
 
+        write_file(&root, ".gitignore", "build/\n*.log\n");
+        viker_git_stage_files(root_path.clone(), vec![".gitignore".to_string()]).unwrap();
+        viker_git_commit(
+            root_path.clone(),
+            "ignore generated files".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        write_file(&root, "build/cache.bin", "ignored\n");
+        write_file(&root, "debug.log", "ignored\n");
+        write_file(&root, "visible.txt", "visible\n");
+        let ignored = viker_git_ignored_paths(root_path.clone()).unwrap();
+        assert!(
+            ignored
+                .iter()
+                .any(|path| path.path == "build/" && path.directory)
+        );
+        assert!(ignored.iter().any(|path| path.path == "debug.log"));
+
+        let remote_root = temp_workspace("git-review-remote");
+        git2::Repository::init_bare(&remote_root).unwrap();
+        repo.remote("origin", remote_root.to_str().unwrap())
+            .unwrap();
+        let push_report = viker_git_push(
+            root_path.clone(),
+            Some("origin".to_string()),
+            Some("master".to_string()),
+            true,
+        )
+        .unwrap();
+        assert!(push_report.message.contains("pushed master to origin"));
+        let remotes = viker_git_remotes(root_path.clone()).unwrap();
+        let origin = remotes
+            .iter()
+            .find(|remote| remote.name == "origin")
+            .unwrap();
+        assert!(
+            origin
+                .upstreams
+                .iter()
+                .any(|upstream| upstream.local_branch == "master")
+        );
+
+        std::fs::remove_dir_all(remote_root).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
