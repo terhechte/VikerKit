@@ -10,7 +10,7 @@ use crate::buffer;
 use crate::config::Config;
 use crate::git::{GitDiff, GitDiffMode, GitEditorCommand};
 use crate::highlight::style::{SyntaxStyle, SyntaxToken};
-use crate::highlight::{self, Highlighter, LineStyles, SyntaxLanguage};
+use crate::highlight::{self, Highlighter, LineStyles, SyntaxLanguage, SyntaxState};
 use crate::input::command::{FindDirection, FindKind, LastFind, Motion};
 use crate::input::mode::Mode;
 use crate::key::{KeyCode, KeyInput};
@@ -32,7 +32,7 @@ pub struct BufferState {
     pub view: View,
     pub history: History,
     pub syntax_language_override: Option<SyntaxLanguage>,
-    pub syntax_tree: Option<tree_sitter::Tree>,
+    pub syntax_tree: Option<SyntaxState>,
     pub line_styles: LineStyles,
     pub styles_offset: usize,
     pub diagnostics: Vec<LspDiagnostic>,
@@ -137,7 +137,7 @@ pub struct Editor {
     pub visual_anchor: Option<Position>,
     pub syntax_language_override: Option<SyntaxLanguage>,
     pub highlighter: Option<Highlighter>,
-    pub syntax_tree: Option<tree_sitter::Tree>,
+    pub syntax_tree: Option<SyntaxState>,
     pub line_styles: LineStyles,
     pub styles_offset: usize,
     // LSP state

@@ -6,7 +6,11 @@ standalone Vim binding state machine, and two frontends: TUI (terminal) and GUI
 (desktop window). It also has a UniFFI Swift target for building a local
 `VikerKit` Swift package backed by an xcframework.
 
-Viker includes tree-sitter highlighting and language-aware LSP/formatting hooks for Rust, Markdown, HTML, CSS, JavaScript, TypeScript, Python, fish, Bash/sh, and zsh.
+Viker includes tree-sitter highlighting and language-aware LSP/formatting hooks
+for Rust, Markdown, HTML, CSS, JavaScript, TypeScript, Python, fish, Bash/sh,
+and zsh. Syntect provides syntax-highlight fallback coverage for additional
+filetypes such as C/C++, C#, Go, Java, JSON, YAML, XML, Ruby, PHP, SQL, and
+Makefiles.
 
 ## Documentation
 

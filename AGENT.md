@@ -125,8 +125,10 @@ behavior should generally fall out of `viker-vim` key mapping plus
 - `crates/viker-core/src/config.rs`: loads `~/.config/viker/config.json`,
   honoring `$XDG_CONFIG_HOME`.
 
-Supported language/filetype coverage currently includes Rust, Markdown, HTML,
-CSS, JavaScript, JSX, TypeScript, TSX, Python, fish, Bash/sh, and zsh.
+Tree-sitter language/filetype coverage currently includes Rust, Markdown, HTML,
+CSS, JavaScript, JSX, TypeScript, TSX, Python, fish, Bash/sh, and zsh. Syntect
+provides syntax-only fallback coverage for additional filetypes such as C/C++,
+C#, Go, Java, JSON, YAML, XML, Ruby, PHP, SQL, and Makefiles.
 
 Default external tools:
 
@@ -201,6 +203,85 @@ GUI project behavior:
 
 The Swift layer is meant for native Swift UI experiments. Keep it as a narrow
 translation layer and avoid adding Swift/iOS concerns to `viker-core`.
+
+## VikerKit Release Workflow
+
+Use the scripts in `scripts/` for VikerKit releases. The release consists of
+a git tag, root SwiftPM package metadata, and a GitHub release asset named
+`VikerKitFFI.xcframework.zip`.
+
+Keep implementation changes and release metadata in separate commits:
+
+1. Commit the implementation first. If the UniFFI API changed, run
+   `scripts/build-viker-swift-xcframework.sh` before that commit and include
+   the regenerated `swift/VikerKit/Sources/VikerKit/VikerKit.swift` with the
+   API change.
+2. Choose the next semver patch version, for example `0.1.9`.
+3. Bump workspace/package metadata without a checksum:
+
+```bash
+scripts/set-viker-version.sh 0.1.9
+```
+
+4. Rebuild the Apple static libraries, generated Swift bindings, and local
+   xcframework:
+
+```bash
+scripts/build-viker-swift-xcframework.sh
+```
+
+5. Create the release zip and compute the SwiftPM checksum:
+
+```bash
+rm -f VikerKitFFI.xcframework.zip
+ditto -c -k --sequesterRsrc --keepParent swift/VikerKit/VikerKitFFI.xcframework VikerKitFFI.xcframework.zip
+swift package compute-checksum VikerKitFFI.xcframework.zip
+```
+
+6. Run the version script again with the computed checksum. This updates the
+   root `Package.swift` release URL/checksum:
+
+```bash
+scripts/set-viker-version.sh 0.1.9 <checksum>
+```
+
+7. Verify before tagging:
+
+```bash
+cargo test -p viker-core
+cargo test -p viker-swift
+swift build --package-path swift/VikerKit
+```
+
+8. Commit the release metadata and tag it:
+
+```bash
+git add Cargo.toml Cargo.lock Package.swift README.md
+git commit -m "Release VikerKit 0.1.9"
+git tag 0.1.9
+```
+
+9. Push `main` and the tag, then create the GitHub release with the zip asset:
+
+```bash
+git push origin main
+git push origin 0.1.9
+gh release create 0.1.9 VikerKitFFI.xcframework.zip \
+  --title "VikerKit 0.1.9" \
+  --notes "Describe the VikerKit changes in this release."
+```
+
+10. Remove the local zip and verify the release asset exists:
+
+```bash
+rm -f VikerKitFFI.xcframework.zip
+gh release view 0.1.9 --json tagName,url,assets --jq '{tagName,url,assets:[.assets[].name]}'
+git status --short
+```
+
+Do not commit `VikerKitFFI.xcframework.zip`. It is a local release artifact
+that belongs on the GitHub release. Do not retag an existing version; make a
+new patch version instead.
 
 ## Major Editor Capabilities
 

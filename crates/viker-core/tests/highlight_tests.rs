@@ -82,6 +82,14 @@ fn syntax_language_is_selected_from_file_extension() {
         SyntaxLanguage::from_path(Some(std::path::Path::new(".zshrc"))),
         Some(SyntaxLanguage::Zsh)
     );
+    assert_eq!(
+        SyntaxLanguage::from_path(Some(std::path::Path::new("package.json"))),
+        Some(SyntaxLanguage::Json)
+    );
+    assert_eq!(
+        SyntaxLanguage::from_path(Some(std::path::Path::new("Makefile"))),
+        Some(SyntaxLanguage::Makefile)
+    );
 }
 
 #[test]
@@ -116,4 +124,21 @@ fn requested_language_highlighters_produce_spans() {
             "{language:?} should produce at least one highlight span"
         );
     }
+}
+
+#[test]
+fn syntect_fallback_highlighter_produces_semantic_spans() {
+    let rope = ropey::Rope::from_str("{\"enabled\": true, \"count\": 3}\n");
+    let mut highlighter = Highlighter::new(SyntaxLanguage::Json).unwrap();
+    let state = highlighter.parse(&rope, None).unwrap();
+    let styles = highlighter.highlight_lines(&state, &rope, 0, rope.len_lines());
+
+    assert!(styles.iter().any(|line| {
+        line.iter()
+            .any(|(_, _, highlight)| highlight.token == SyntaxToken::StringLiteral)
+    }));
+    assert!(styles.iter().any(|line| {
+        line.iter()
+            .any(|(_, _, highlight)| highlight.token == SyntaxToken::NumberLiteral)
+    }));
 }

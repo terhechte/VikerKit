@@ -33,6 +33,18 @@ fn detects_requested_languages_from_extensions() {
         LanguageKind::from_path(Some(Path::new("setup.zsh"))),
         Some(LanguageKind::Zsh)
     );
+    assert_eq!(
+        LanguageKind::from_path(Some(Path::new("data.json"))),
+        Some(LanguageKind::Json)
+    );
+    assert_eq!(
+        LanguageKind::from_path(Some(Path::new("src/main.cpp"))),
+        Some(LanguageKind::Cpp)
+    );
+    assert_eq!(
+        LanguageKind::from_path(Some(Path::new("Makefile"))),
+        Some(LanguageKind::Makefile)
+    );
 }
 
 #[test]

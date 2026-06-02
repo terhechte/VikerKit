@@ -123,6 +123,45 @@ pub enum VikerSyntaxLanguage {
     Fish,
     Bash,
     Zsh,
+    ActionScript,
+    AppleScript,
+    BatchFile,
+    BibTex,
+    C,
+    Cpp,
+    CSharp,
+    Clojure,
+    D,
+    Diff,
+    Erlang,
+    Go,
+    Graphviz,
+    Groovy,
+    Haskell,
+    Java,
+    JavaProperties,
+    Json,
+    Latex,
+    Lisp,
+    Lua,
+    Matlab,
+    Makefile,
+    ObjectiveC,
+    ObjectiveCpp,
+    Ocaml,
+    Pascal,
+    Perl,
+    Php,
+    R,
+    ReStructuredText,
+    Ruby,
+    Scala,
+    Sql,
+    Tcl,
+    Tex,
+    Textile,
+    Xml,
+    Yaml,
 }
 
 #[derive(Clone, Copy, Debug, uniffi::Enum)]
@@ -3842,6 +3881,45 @@ fn syntax_language_to_core(language: VikerSyntaxLanguage) -> language::LanguageK
         VikerSyntaxLanguage::Fish => language::LanguageKind::Fish,
         VikerSyntaxLanguage::Bash => language::LanguageKind::Bash,
         VikerSyntaxLanguage::Zsh => language::LanguageKind::Zsh,
+        VikerSyntaxLanguage::ActionScript => language::LanguageKind::ActionScript,
+        VikerSyntaxLanguage::AppleScript => language::LanguageKind::AppleScript,
+        VikerSyntaxLanguage::BatchFile => language::LanguageKind::BatchFile,
+        VikerSyntaxLanguage::BibTex => language::LanguageKind::BibTex,
+        VikerSyntaxLanguage::C => language::LanguageKind::C,
+        VikerSyntaxLanguage::Cpp => language::LanguageKind::Cpp,
+        VikerSyntaxLanguage::CSharp => language::LanguageKind::CSharp,
+        VikerSyntaxLanguage::Clojure => language::LanguageKind::Clojure,
+        VikerSyntaxLanguage::D => language::LanguageKind::D,
+        VikerSyntaxLanguage::Diff => language::LanguageKind::Diff,
+        VikerSyntaxLanguage::Erlang => language::LanguageKind::Erlang,
+        VikerSyntaxLanguage::Go => language::LanguageKind::Go,
+        VikerSyntaxLanguage::Graphviz => language::LanguageKind::Graphviz,
+        VikerSyntaxLanguage::Groovy => language::LanguageKind::Groovy,
+        VikerSyntaxLanguage::Haskell => language::LanguageKind::Haskell,
+        VikerSyntaxLanguage::Java => language::LanguageKind::Java,
+        VikerSyntaxLanguage::JavaProperties => language::LanguageKind::JavaProperties,
+        VikerSyntaxLanguage::Json => language::LanguageKind::Json,
+        VikerSyntaxLanguage::Latex => language::LanguageKind::Latex,
+        VikerSyntaxLanguage::Lisp => language::LanguageKind::Lisp,
+        VikerSyntaxLanguage::Lua => language::LanguageKind::Lua,
+        VikerSyntaxLanguage::Matlab => language::LanguageKind::Matlab,
+        VikerSyntaxLanguage::Makefile => language::LanguageKind::Makefile,
+        VikerSyntaxLanguage::ObjectiveC => language::LanguageKind::ObjectiveC,
+        VikerSyntaxLanguage::ObjectiveCpp => language::LanguageKind::ObjectiveCpp,
+        VikerSyntaxLanguage::Ocaml => language::LanguageKind::Ocaml,
+        VikerSyntaxLanguage::Pascal => language::LanguageKind::Pascal,
+        VikerSyntaxLanguage::Perl => language::LanguageKind::Perl,
+        VikerSyntaxLanguage::Php => language::LanguageKind::Php,
+        VikerSyntaxLanguage::R => language::LanguageKind::R,
+        VikerSyntaxLanguage::ReStructuredText => language::LanguageKind::ReStructuredText,
+        VikerSyntaxLanguage::Ruby => language::LanguageKind::Ruby,
+        VikerSyntaxLanguage::Scala => language::LanguageKind::Scala,
+        VikerSyntaxLanguage::Sql => language::LanguageKind::Sql,
+        VikerSyntaxLanguage::Tcl => language::LanguageKind::Tcl,
+        VikerSyntaxLanguage::Tex => language::LanguageKind::Tex,
+        VikerSyntaxLanguage::Textile => language::LanguageKind::Textile,
+        VikerSyntaxLanguage::Xml => language::LanguageKind::Xml,
+        VikerSyntaxLanguage::Yaml => language::LanguageKind::Yaml,
     }
 }
 
@@ -3859,6 +3937,45 @@ fn syntax_language_from_core(language: SyntaxLanguage) -> VikerSyntaxLanguage {
         SyntaxLanguage::Fish => VikerSyntaxLanguage::Fish,
         SyntaxLanguage::Bash => VikerSyntaxLanguage::Bash,
         SyntaxLanguage::Zsh => VikerSyntaxLanguage::Zsh,
+        SyntaxLanguage::ActionScript => VikerSyntaxLanguage::ActionScript,
+        SyntaxLanguage::AppleScript => VikerSyntaxLanguage::AppleScript,
+        SyntaxLanguage::BatchFile => VikerSyntaxLanguage::BatchFile,
+        SyntaxLanguage::BibTex => VikerSyntaxLanguage::BibTex,
+        SyntaxLanguage::C => VikerSyntaxLanguage::C,
+        SyntaxLanguage::Cpp => VikerSyntaxLanguage::Cpp,
+        SyntaxLanguage::CSharp => VikerSyntaxLanguage::CSharp,
+        SyntaxLanguage::Clojure => VikerSyntaxLanguage::Clojure,
+        SyntaxLanguage::D => VikerSyntaxLanguage::D,
+        SyntaxLanguage::Diff => VikerSyntaxLanguage::Diff,
+        SyntaxLanguage::Erlang => VikerSyntaxLanguage::Erlang,
+        SyntaxLanguage::Go => VikerSyntaxLanguage::Go,
+        SyntaxLanguage::Graphviz => VikerSyntaxLanguage::Graphviz,
+        SyntaxLanguage::Groovy => VikerSyntaxLanguage::Groovy,
+        SyntaxLanguage::Haskell => VikerSyntaxLanguage::Haskell,
+        SyntaxLanguage::Java => VikerSyntaxLanguage::Java,
+        SyntaxLanguage::JavaProperties => VikerSyntaxLanguage::JavaProperties,
+        SyntaxLanguage::Json => VikerSyntaxLanguage::Json,
+        SyntaxLanguage::Latex => VikerSyntaxLanguage::Latex,
+        SyntaxLanguage::Lisp => VikerSyntaxLanguage::Lisp,
+        SyntaxLanguage::Lua => VikerSyntaxLanguage::Lua,
+        SyntaxLanguage::Matlab => VikerSyntaxLanguage::Matlab,
+        SyntaxLanguage::Makefile => VikerSyntaxLanguage::Makefile,
+        SyntaxLanguage::ObjectiveC => VikerSyntaxLanguage::ObjectiveC,
+        SyntaxLanguage::ObjectiveCpp => VikerSyntaxLanguage::ObjectiveCpp,
+        SyntaxLanguage::Ocaml => VikerSyntaxLanguage::Ocaml,
+        SyntaxLanguage::Pascal => VikerSyntaxLanguage::Pascal,
+        SyntaxLanguage::Perl => VikerSyntaxLanguage::Perl,
+        SyntaxLanguage::Php => VikerSyntaxLanguage::Php,
+        SyntaxLanguage::R => VikerSyntaxLanguage::R,
+        SyntaxLanguage::ReStructuredText => VikerSyntaxLanguage::ReStructuredText,
+        SyntaxLanguage::Ruby => VikerSyntaxLanguage::Ruby,
+        SyntaxLanguage::Scala => VikerSyntaxLanguage::Scala,
+        SyntaxLanguage::Sql => VikerSyntaxLanguage::Sql,
+        SyntaxLanguage::Tcl => VikerSyntaxLanguage::Tcl,
+        SyntaxLanguage::Tex => VikerSyntaxLanguage::Tex,
+        SyntaxLanguage::Textile => VikerSyntaxLanguage::Textile,
+        SyntaxLanguage::Xml => VikerSyntaxLanguage::Xml,
+        SyntaxLanguage::Yaml => VikerSyntaxLanguage::Yaml,
     }
 }
 
@@ -4654,6 +4771,33 @@ mod tests {
 
         let style = editor.highlight_style_at(1, 1).unwrap();
         assert!(style.foreground.is_some());
+    }
+
+    #[test]
+    fn swift_editor_exposes_syntect_fallback_highlights() {
+        let root = temp_workspace("syntect-fallback");
+        let path = root.join("package.json");
+        std::fs::write(&path, "{\"name\": \"viker\", \"private\": true}\n").unwrap();
+        let editor = VikerEditor::open(path.to_string_lossy().to_string()).unwrap();
+
+        assert!(matches!(
+            editor.syntax_language().unwrap(),
+            Some(VikerSyntaxLanguage::Json)
+        ));
+        let spans = editor.highlight_spans(0, 1).unwrap();
+        assert!(spans.iter().any(|span| {
+            matches!(span.token, VikerSyntaxToken::StringLiteral) && span.style.foreground.is_some()
+        }));
+
+        editor
+            .set_language(Some(VikerSyntaxLanguage::Yaml))
+            .unwrap();
+        assert!(matches!(
+            editor.syntax_language().unwrap(),
+            Some(VikerSyntaxLanguage::Yaml)
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

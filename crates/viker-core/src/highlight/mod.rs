@@ -1,28 +1,105 @@
 pub mod style;
 pub mod theme;
 
+use std::sync::LazyLock;
+
 use ropey::Rope;
 use streaming_iterator::StreamingIterator;
+use syntect::easy::ScopeRegionIterator;
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use syntect::util::LinesWithEndings;
 use tree_sitter::{Parser, Query, QueryCursor, Tree};
 
-use self::style::{SyntaxHighlight, SyntaxStyle};
-use self::theme::{default_highlight, highlight_for_capture};
+use self::style::{SyntaxHighlight, SyntaxStyle, SyntaxToken};
+use self::theme::{default_highlight, highlight_for_capture, style_for_token};
 
 pub use crate::language::LanguageKind as SyntaxLanguage;
 
 /// Per-line highlight spans: Vec of (start_col, end_col, SyntaxHighlight) per visible line.
 pub type LineStyles = Vec<Vec<(usize, usize, SyntaxHighlight)>>;
 
+static SYNTECT_SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+
+pub enum SyntaxState {
+    TreeSitter(Tree),
+    Syntect,
+}
+
+impl SyntaxState {
+    fn as_tree_sitter(&self) -> Option<&Tree> {
+        match self {
+            Self::TreeSitter(tree) => Some(tree),
+            Self::Syntect => None,
+        }
+    }
+}
+
 pub struct Highlighter {
     language: SyntaxLanguage,
+    backend: HighlighterBackend,
+}
+
+enum HighlighterBackend {
+    TreeSitter(TreeSitterHighlighter),
+    Syntect(SyntectHighlighter),
+}
+
+struct TreeSitterHighlighter {
     parser: Parser,
     query: Query,
     inline_parser: Option<Parser>,
     inline_query: Option<Query>,
 }
 
+struct SyntectHighlighter {
+    syntax: &'static SyntaxReference,
+}
+
 impl Highlighter {
     pub fn new(language: SyntaxLanguage) -> Option<Self> {
+        let backend = TreeSitterHighlighter::new(language)
+            .map(HighlighterBackend::TreeSitter)
+            .or_else(|| SyntectHighlighter::new(language).map(HighlighterBackend::Syntect))?;
+
+        Some(Self { language, backend })
+    }
+
+    pub fn language(&self) -> SyntaxLanguage {
+        self.language
+    }
+
+    /// Parse (or reparse) the document. Returns syntax state for the active backend.
+    pub fn parse(&mut self, rope: &Rope, old_state: Option<&SyntaxState>) -> Option<SyntaxState> {
+        match &mut self.backend {
+            HighlighterBackend::TreeSitter(backend) => backend
+                .parse(rope, old_state.and_then(SyntaxState::as_tree_sitter))
+                .map(SyntaxState::TreeSitter),
+            HighlighterBackend::Syntect(_) => Some(SyntaxState::Syntect),
+        }
+    }
+
+    /// Compute highlight spans for the given line range [start_line, end_line).
+    pub fn highlight_lines(
+        &mut self,
+        state: &SyntaxState,
+        rope: &Rope,
+        start_line: usize,
+        end_line: usize,
+    ) -> LineStyles {
+        match (&mut self.backend, state) {
+            (HighlighterBackend::TreeSitter(backend), SyntaxState::TreeSitter(tree)) => {
+                backend.highlight_lines(tree, rope, start_line, end_line)
+            }
+            (HighlighterBackend::Syntect(backend), SyntaxState::Syntect) => {
+                backend.highlight_lines(rope, start_line, end_line)
+            }
+            _ => vec![vec![]; end_line.saturating_sub(start_line)],
+        }
+    }
+}
+
+impl TreeSitterHighlighter {
+    fn new(language: SyntaxLanguage) -> Option<Self> {
         let mut parser = Parser::new();
         let (query, inline_parser, inline_query) = match language {
             SyntaxLanguage::Rust => {
@@ -122,10 +199,10 @@ impl Highlighter {
                 let query = setup_parser(&mut parser, language, tree_sitter_zsh::HIGHLIGHT_QUERY)?;
                 (query, None, None)
             }
+            _ => return None,
         };
 
         Some(Self {
-            language,
             parser,
             query,
             inline_parser,
@@ -133,17 +210,13 @@ impl Highlighter {
         })
     }
 
-    pub fn language(&self) -> SyntaxLanguage {
-        self.language
-    }
-
     /// Parse (or reparse) the document. Returns a new syntax tree.
-    pub fn parse(&mut self, rope: &Rope, old_tree: Option<&Tree>) -> Option<Tree> {
+    fn parse(&mut self, rope: &Rope, old_tree: Option<&Tree>) -> Option<Tree> {
         self.parser.parse(rope.to_string(), old_tree)
     }
 
     /// Compute highlight spans for the given line range [start_line, end_line).
-    pub fn highlight_lines(
+    fn highlight_lines(
         &mut self,
         tree: &Tree,
         rope: &Rope,
@@ -202,7 +275,7 @@ impl Highlighter {
             }
         }
 
-        if self.language == SyntaxLanguage::Markdown {
+        if self.inline_query.is_some() {
             self.highlight_markdown_inline(tree, rope, start_line, end_line, &mut result);
         }
 
@@ -256,6 +329,155 @@ impl Highlighter {
                 }
             }
         }
+    }
+}
+
+impl SyntectHighlighter {
+    fn new(language: SyntaxLanguage) -> Option<Self> {
+        let spec = language.spec();
+        let syntax_name = spec.syntect_name?;
+        let syntax_set = syntect_syntax_set();
+        let syntax = syntax_set
+            .find_syntax_by_name(syntax_name)
+            .or_else(|| {
+                spec.extensions
+                    .iter()
+                    .find_map(|extension| syntax_set.find_syntax_by_extension(extension))
+            })
+            .or_else(|| {
+                spec.filenames
+                    .iter()
+                    .find_map(|filename| syntax_set.find_syntax_by_token(filename))
+            })
+            .or_else(|| syntax_set.find_syntax_by_token(spec.id))?;
+
+        Some(Self { syntax })
+    }
+
+    fn highlight_lines(&self, rope: &Rope, start_line: usize, end_line: usize) -> LineStyles {
+        let num_lines = end_line.saturating_sub(start_line);
+        let mut result: Vec<Vec<(usize, usize, SyntaxHighlight)>> = vec![vec![]; num_lines];
+        if num_lines == 0 {
+            return result;
+        }
+
+        let source = rope.to_string();
+        let syntax_set = syntect_syntax_set();
+        let mut parse_state = ParseState::new(self.syntax);
+        let mut scope_stack = ScopeStack::new();
+
+        for (line_idx, line) in LinesWithEndings::from(&source).enumerate() {
+            if line_idx >= end_line {
+                break;
+            }
+
+            let Ok(ops) = parse_state.parse_line(line, syntax_set) else {
+                continue;
+            };
+
+            let mut column = 0;
+            for (segment, op) in ScopeRegionIterator::new(&ops, line) {
+                if scope_stack.apply(op).is_err() {
+                    return result;
+                }
+
+                let segment_len = segment.chars().count();
+                if line_idx >= start_line {
+                    let token = token_for_syntect_scope_stack(&scope_stack);
+                    let visible_segment = segment.trim_end_matches(&['\r', '\n'][..]);
+                    let visible_len = visible_segment.chars().count();
+                    if visible_len > 0
+                        && token != SyntaxToken::Text
+                        && token != SyntaxToken::Unknown
+                    {
+                        let highlight = SyntaxHighlight::new(token, style_for_token(token));
+                        result[line_idx - start_line].push((
+                            column,
+                            column + visible_len,
+                            highlight,
+                        ));
+                    }
+                }
+                column += segment_len;
+            }
+        }
+
+        result
+    }
+}
+
+fn syntect_syntax_set() -> &'static SyntaxSet {
+    &SYNTECT_SYNTAX_SET
+}
+
+fn token_for_syntect_scope_stack(stack: &ScopeStack) -> SyntaxToken {
+    stack
+        .scopes
+        .iter()
+        .rev()
+        .find_map(|scope| token_for_syntect_scope(&scope.to_string()))
+        .unwrap_or(SyntaxToken::Text)
+}
+
+fn token_for_syntect_scope(scope: &str) -> Option<SyntaxToken> {
+    if scope.starts_with("comment") {
+        Some(SyntaxToken::Comment)
+    } else if scope.starts_with("constant.character.escape") {
+        Some(SyntaxToken::Escape)
+    } else if scope.starts_with("constant.character") {
+        Some(SyntaxToken::Character)
+    } else if scope.starts_with("string") {
+        Some(SyntaxToken::StringLiteral)
+    } else if scope.starts_with("constant.numeric") {
+        Some(SyntaxToken::NumberLiteral)
+    } else if scope.starts_with("constant.language.boolean") {
+        Some(SyntaxToken::BooleanLiteral)
+    } else if scope.starts_with("constant") {
+        Some(SyntaxToken::Constant)
+    } else if scope.starts_with("keyword.operator") {
+        Some(SyntaxToken::Operator)
+    } else if scope.starts_with("keyword") || scope.starts_with("storage") {
+        Some(SyntaxToken::Keyword)
+    } else if scope.starts_with("entity.name.tag") {
+        Some(SyntaxToken::Tag)
+    } else if scope.starts_with("entity.other.attribute-name") {
+        Some(SyntaxToken::Attribute)
+    } else if scope.starts_with("entity.name.function") || scope.starts_with("support.function") {
+        Some(SyntaxToken::Function)
+    } else if scope.starts_with("entity.name.type")
+        || scope.starts_with("entity.name.class")
+        || scope.starts_with("support.type")
+        || scope.starts_with("support.class")
+    {
+        Some(SyntaxToken::TypeName)
+    } else if scope.starts_with("entity.name.namespace") {
+        Some(SyntaxToken::Module)
+    } else if scope.starts_with("entity.name.section") {
+        Some(SyntaxToken::Label)
+    } else if scope.starts_with("support.constant") {
+        Some(SyntaxToken::Constant)
+    } else if scope.starts_with("support.variable.property")
+        || scope.starts_with("variable.other.member")
+    {
+        Some(SyntaxToken::Property)
+    } else if scope.starts_with("variable.parameter") {
+        Some(SyntaxToken::Parameter)
+    } else if scope.starts_with("variable") {
+        Some(SyntaxToken::Variable)
+    } else if scope.starts_with("punctuation") {
+        Some(SyntaxToken::Punctuation)
+    } else if scope.starts_with("markup.heading") {
+        Some(SyntaxToken::Heading)
+    } else if scope.starts_with("markup.bold") {
+        Some(SyntaxToken::Strong)
+    } else if scope.starts_with("markup.italic") {
+        Some(SyntaxToken::Emphasis)
+    } else if scope.starts_with("markup.underline.link") {
+        Some(SyntaxToken::LinkUrl)
+    } else if scope.starts_with("markup.raw") {
+        Some(SyntaxToken::RawText)
+    } else {
+        None
     }
 }
 

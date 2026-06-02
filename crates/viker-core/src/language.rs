@@ -16,6 +16,45 @@ pub enum LanguageKind {
     Fish,
     Bash,
     Zsh,
+    ActionScript,
+    AppleScript,
+    BatchFile,
+    BibTex,
+    C,
+    Cpp,
+    CSharp,
+    Clojure,
+    D,
+    Diff,
+    Erlang,
+    Go,
+    Graphviz,
+    Groovy,
+    Haskell,
+    Java,
+    JavaProperties,
+    Json,
+    Latex,
+    Lisp,
+    Lua,
+    Matlab,
+    Makefile,
+    ObjectiveC,
+    ObjectiveCpp,
+    Ocaml,
+    Pascal,
+    Perl,
+    Php,
+    R,
+    ReStructuredText,
+    Ruby,
+    Scala,
+    Sql,
+    Tcl,
+    Tex,
+    Textile,
+    Xml,
+    Yaml,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +85,7 @@ pub struct LanguageSpec {
     pub root_markers: &'static [&'static str],
     pub lsp: Option<ToolSpec>,
     pub formatter: Option<FormatterSpec>,
+    pub syntect_name: Option<&'static str>,
 }
 
 const PRETTIER: FormatterSpec = FormatterSpec {
@@ -54,6 +94,23 @@ const PRETTIER: FormatterSpec = FormatterSpec {
         args: &["--stdin-filepath", "{path}"],
     },
 };
+
+macro_rules! syntect_language {
+    ($kind:ident, $id:literal, $syntect_name:literal, $extensions:expr, $filenames:expr) => {
+        LanguageSpec {
+            kind: LanguageKind::$kind,
+            id: $id,
+            lsp_language_id: $id,
+            extensions: $extensions,
+            filenames: $filenames,
+            shebangs: &[],
+            root_markers: &[".git"],
+            lsp: None,
+            formatter: None,
+            syntect_name: Some($syntect_name),
+        }
+    };
+}
 
 const LANGUAGE_SPECS: &[LanguageSpec] = &[
     LanguageSpec {
@@ -69,6 +126,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &[],
         }),
         formatter: None,
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Markdown,
@@ -80,6 +138,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
         root_markers: &[".git"],
         lsp: None,
         formatter: None,
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Html,
@@ -94,6 +153,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["--stdio"],
         }),
         formatter: Some(PRETTIER),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Css,
@@ -108,6 +168,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["--stdio"],
         }),
         formatter: Some(PRETTIER),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::JavaScript,
@@ -122,6 +183,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["--stdio"],
         }),
         formatter: Some(PRETTIER),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Jsx,
@@ -136,6 +198,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["--stdio"],
         }),
         formatter: Some(PRETTIER),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::TypeScript,
@@ -150,6 +213,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["--stdio"],
         }),
         formatter: Some(PRETTIER),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Tsx,
@@ -164,6 +228,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["--stdio"],
         }),
         formatter: Some(PRETTIER),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Python,
@@ -192,6 +257,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
                 args: &["format", "--stdin-filename", "{path}", "--quiet", "-"],
             },
         }),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Fish,
@@ -211,6 +277,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
                 args: &[],
             },
         }),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Bash,
@@ -230,6 +297,7 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
                 args: &["-ln", "bash", "-filename", "{path}"],
             },
         }),
+        syntect_name: None,
     },
     LanguageSpec {
         kind: LanguageKind::Zsh,
@@ -244,7 +312,114 @@ const LANGUAGE_SPECS: &[LanguageSpec] = &[
             args: &["start"],
         }),
         formatter: None,
+        syntect_name: None,
     },
+    syntect_language!(ActionScript, "actionscript", "ActionScript", &["as"], &[]),
+    syntect_language!(
+        AppleScript,
+        "applescript",
+        "AppleScript",
+        &["applescript"],
+        &[]
+    ),
+    syntect_language!(BatchFile, "batch", "Batch File", &["bat", "cmd"], &[]),
+    syntect_language!(BibTex, "bibtex", "BibTeX", &["bib"], &[]),
+    syntect_language!(C, "c", "C", &["c"], &[]),
+    syntect_language!(
+        Cpp,
+        "cpp",
+        "C++",
+        &[
+            "cpp", "cc", "cp", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp"
+        ],
+        &[]
+    ),
+    syntect_language!(CSharp, "csharp", "C#", &["cs", "csx"], &[]),
+    syntect_language!(Clojure, "clojure", "Clojure", &["clj"], &[]),
+    syntect_language!(D, "d", "D", &["d", "di"], &[]),
+    syntect_language!(Diff, "diff", "Diff", &["diff", "patch"], &[]),
+    syntect_language!(Erlang, "erlang", "Erlang", &["erl", "hrl"], &["Emakefile"]),
+    syntect_language!(Go, "go", "Go", &["go"], &[]),
+    syntect_language!(Graphviz, "graphviz", "Graphviz (DOT)", &["dot", "gv"], &[]),
+    syntect_language!(
+        Groovy,
+        "groovy",
+        "Groovy",
+        &["groovy", "gvy", "gradle"],
+        &[]
+    ),
+    syntect_language!(Haskell, "haskell", "Haskell", &["hs", "lhs"], &[]),
+    syntect_language!(Java, "java", "Java", &["java", "bsh"], &[]),
+    syntect_language!(
+        JavaProperties,
+        "java-properties",
+        "Java Properties",
+        &["properties"],
+        &[]
+    ),
+    syntect_language!(Json, "json", "JSON", &["json"], &[]),
+    syntect_language!(Latex, "latex", "LaTeX", &["tex", "ltx"], &[]),
+    syntect_language!(
+        Lisp,
+        "lisp",
+        "Lisp",
+        &[
+            "lisp", "cl", "clisp", "l", "mud", "el", "scm", "ss", "lsp", "fasl"
+        ],
+        &[]
+    ),
+    syntect_language!(Lua, "lua", "Lua", &["lua"], &[]),
+    syntect_language!(Matlab, "matlab", "MATLAB", &["matlab"], &[]),
+    syntect_language!(
+        Makefile,
+        "makefile",
+        "Makefile",
+        &["make", "mak", "mk"],
+        &["Makefile", "makefile", "GNUmakefile", "OCamlMakefile"]
+    ),
+    syntect_language!(ObjectiveC, "objective-c", "Objective-C", &["m"], &[]),
+    syntect_language!(ObjectiveCpp, "objective-cpp", "Objective-C++", &["mm"], &[]),
+    syntect_language!(Ocaml, "ocaml", "OCaml", &["ml", "mli"], &[]),
+    syntect_language!(Pascal, "pascal", "Pascal", &["pas", "p", "dpr"], &[]),
+    syntect_language!(Perl, "perl", "Perl", &["pl", "pm", "pod", "t"], &[]),
+    syntect_language!(
+        Php,
+        "php",
+        "PHP",
+        &[
+            "php", "php3", "php4", "php5", "php7", "phps", "phpt", "phtml"
+        ],
+        &[]
+    ),
+    syntect_language!(R, "r", "R", &["r", "s"], &[".Rprofile"]),
+    syntect_language!(
+        ReStructuredText,
+        "restructuredtext",
+        "reStructuredText",
+        &["rst", "rest"],
+        &[]
+    ),
+    syntect_language!(
+        Ruby,
+        "ruby",
+        "Ruby",
+        &["rb", "cgi", "fcgi", "gemspec", "rake", "rjs"],
+        &[
+            "Gemfile",
+            "Rakefile",
+            "Vagrantfile",
+            "Podfile",
+            "Brewfile",
+            "Fastfile"
+        ]
+    ),
+    syntect_language!(Scala, "scala", "Scala", &["scala", "sbt"], &[]),
+    syntect_language!(Sql, "sql", "SQL", &["sql", "ddl", "dml"], &[]),
+    syntect_language!(Tcl, "tcl", "Tcl", &["tcl"], &[]),
+    syntect_language!(Tex, "tex", "TeX", &["sty", "cls"], &[]),
+    syntect_language!(Textile, "textile", "Textile", &["textile"], &[]),
+    syntect_language!(Xml, "xml", "XML", &["xml", "xsd", "xslt", "svg"], &[]),
+    syntect_language!(Yaml, "yaml", "YAML", &["yaml", "yml"], &[]),
 ];
 
 impl LanguageKind {

@@ -5496,6 +5496,45 @@ public enum VikerSyntaxLanguage: Equatable, Hashable {
     case fish
     case bash
     case zsh
+    case actionScript
+    case appleScript
+    case batchFile
+    case bibTex
+    case c
+    case cpp
+    case cSharp
+    case clojure
+    case d
+    case diff
+    case erlang
+    case go
+    case graphviz
+    case groovy
+    case haskell
+    case java
+    case javaProperties
+    case json
+    case latex
+    case lisp
+    case lua
+    case matlab
+    case makefile
+    case objectiveC
+    case objectiveCpp
+    case ocaml
+    case pascal
+    case perl
+    case php
+    case r
+    case reStructuredText
+    case ruby
+    case scala
+    case sql
+    case tcl
+    case tex
+    case textile
+    case xml
+    case yaml
 
 
 
@@ -5540,6 +5579,84 @@ public struct FfiConverterTypeVikerSyntaxLanguage: FfiConverterRustBuffer {
         case 11: return .bash
         
         case 12: return .zsh
+        
+        case 13: return .actionScript
+        
+        case 14: return .appleScript
+        
+        case 15: return .batchFile
+        
+        case 16: return .bibTex
+        
+        case 17: return .c
+        
+        case 18: return .cpp
+        
+        case 19: return .cSharp
+        
+        case 20: return .clojure
+        
+        case 21: return .d
+        
+        case 22: return .diff
+        
+        case 23: return .erlang
+        
+        case 24: return .go
+        
+        case 25: return .graphviz
+        
+        case 26: return .groovy
+        
+        case 27: return .haskell
+        
+        case 28: return .java
+        
+        case 29: return .javaProperties
+        
+        case 30: return .json
+        
+        case 31: return .latex
+        
+        case 32: return .lisp
+        
+        case 33: return .lua
+        
+        case 34: return .matlab
+        
+        case 35: return .makefile
+        
+        case 36: return .objectiveC
+        
+        case 37: return .objectiveCpp
+        
+        case 38: return .ocaml
+        
+        case 39: return .pascal
+        
+        case 40: return .perl
+        
+        case 41: return .php
+        
+        case 42: return .r
+        
+        case 43: return .reStructuredText
+        
+        case 44: return .ruby
+        
+        case 45: return .scala
+        
+        case 46: return .sql
+        
+        case 47: return .tcl
+        
+        case 48: return .tex
+        
+        case 49: return .textile
+        
+        case 50: return .xml
+        
+        case 51: return .yaml
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -5595,6 +5712,162 @@ public struct FfiConverterTypeVikerSyntaxLanguage: FfiConverterRustBuffer {
         
         case .zsh:
             writeInt(&buf, Int32(12))
+        
+        
+        case .actionScript:
+            writeInt(&buf, Int32(13))
+        
+        
+        case .appleScript:
+            writeInt(&buf, Int32(14))
+        
+        
+        case .batchFile:
+            writeInt(&buf, Int32(15))
+        
+        
+        case .bibTex:
+            writeInt(&buf, Int32(16))
+        
+        
+        case .c:
+            writeInt(&buf, Int32(17))
+        
+        
+        case .cpp:
+            writeInt(&buf, Int32(18))
+        
+        
+        case .cSharp:
+            writeInt(&buf, Int32(19))
+        
+        
+        case .clojure:
+            writeInt(&buf, Int32(20))
+        
+        
+        case .d:
+            writeInt(&buf, Int32(21))
+        
+        
+        case .diff:
+            writeInt(&buf, Int32(22))
+        
+        
+        case .erlang:
+            writeInt(&buf, Int32(23))
+        
+        
+        case .go:
+            writeInt(&buf, Int32(24))
+        
+        
+        case .graphviz:
+            writeInt(&buf, Int32(25))
+        
+        
+        case .groovy:
+            writeInt(&buf, Int32(26))
+        
+        
+        case .haskell:
+            writeInt(&buf, Int32(27))
+        
+        
+        case .java:
+            writeInt(&buf, Int32(28))
+        
+        
+        case .javaProperties:
+            writeInt(&buf, Int32(29))
+        
+        
+        case .json:
+            writeInt(&buf, Int32(30))
+        
+        
+        case .latex:
+            writeInt(&buf, Int32(31))
+        
+        
+        case .lisp:
+            writeInt(&buf, Int32(32))
+        
+        
+        case .lua:
+            writeInt(&buf, Int32(33))
+        
+        
+        case .matlab:
+            writeInt(&buf, Int32(34))
+        
+        
+        case .makefile:
+            writeInt(&buf, Int32(35))
+        
+        
+        case .objectiveC:
+            writeInt(&buf, Int32(36))
+        
+        
+        case .objectiveCpp:
+            writeInt(&buf, Int32(37))
+        
+        
+        case .ocaml:
+            writeInt(&buf, Int32(38))
+        
+        
+        case .pascal:
+            writeInt(&buf, Int32(39))
+        
+        
+        case .perl:
+            writeInt(&buf, Int32(40))
+        
+        
+        case .php:
+            writeInt(&buf, Int32(41))
+        
+        
+        case .r:
+            writeInt(&buf, Int32(42))
+        
+        
+        case .reStructuredText:
+            writeInt(&buf, Int32(43))
+        
+        
+        case .ruby:
+            writeInt(&buf, Int32(44))
+        
+        
+        case .scala:
+            writeInt(&buf, Int32(45))
+        
+        
+        case .sql:
+            writeInt(&buf, Int32(46))
+        
+        
+        case .tcl:
+            writeInt(&buf, Int32(47))
+        
+        
+        case .tex:
+            writeInt(&buf, Int32(48))
+        
+        
+        case .textile:
+            writeInt(&buf, Int32(49))
+        
+        
+        case .xml:
+            writeInt(&buf, Int32(50))
+        
+        
+        case .yaml:
+            writeInt(&buf, Int32(51))
         
         }
     }

@@ -3,7 +3,7 @@ use crate::editor::history::History;
 use crate::editor::selection::Position;
 use crate::editor::view::View;
 use crate::highlight::style::SyntaxStyle;
-use crate::highlight::{self, LineStyles};
+use crate::highlight::{self, LineStyles, SyntaxState};
 use crate::input::mode::Mode;
 use crate::lsp::LspDiagnostic;
 
@@ -36,7 +36,7 @@ pub struct Pane {
     pub cursor: Position,
     pub view: View,
     pub history: History,
-    pub syntax_tree: Option<tree_sitter::Tree>,
+    pub syntax_tree: Option<SyntaxState>,
     pub line_styles: LineStyles,
     pub styles_offset: usize,
     pub search_query: String,
