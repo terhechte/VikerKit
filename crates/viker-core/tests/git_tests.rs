@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use git2::{IndexAddOption, Repository, Signature};
 use viker_core::editor::document::Document;
 use viker_core::editor::{DeferredAction, Editor};
-use viker_core::git::{self, GitDiffMode, GitDiffOptions, GitLineKind};
+use viker_core::git::{
+    self, GitDiffMode, GitDiffOptions, GitLineKind, GitReviewDiffDestination, GitReviewDiffError,
+    GitReviewDiffErrorKind, GitReviewDiffIntent,
+};
 
 struct TempRepo {
     root: PathBuf,
@@ -64,6 +67,10 @@ fn commit_all(repo: &Repository, message: &str) {
         &parents,
     )
     .unwrap();
+}
+
+fn review_error_kind(error: anyhow::Error) -> GitReviewDiffErrorKind {
+    error.downcast::<GitReviewDiffError>().unwrap().kind
 }
 
 #[test]
@@ -380,6 +387,380 @@ fn git_reference_diffs_cover_branches_commits_and_stashes() {
         git::repository_diff_reference(&project.root, "stash@{0}", 3, &[], false, 1_000_000)
             .unwrap();
     assert_eq!(stash_diff.files[0].new_path.as_deref(), Some("src/lib.rs"));
+}
+
+#[test]
+fn git_reference_line_targets_apply_and_revert_added_and_deleted_lines() {
+    let (project, repo) = temp_repo("review-reference-lines");
+    write_file(&project.root, "notes.txt", "alpha\ncharlie\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "notes.txt", "alpha\nbravo\ncharlie\n");
+    commit_all(&repo, "add bravo");
+
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    assert!(diff.left_oid.is_some());
+    assert!(diff.right_oid.is_some());
+    let zero_context =
+        git::repository_diff_reference(&project.root, "master...HEAD", 0, &[], true, 1_000_000)
+            .unwrap();
+    assert_eq!(diff.files[0].id, zero_context.files[0].id);
+    assert_eq!(diff.files[0].hunks[0].id, zero_context.files[0].hunks[0].id);
+    let file_id = diff.files[0].id.clone();
+    let hunk_id = diff.files[0].hunks[0].id.clone();
+    let line_id = diff.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Addition && line.content == "bravo")
+        .unwrap()
+        .id
+        .clone();
+
+    git::apply_reference_lines(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        &[line_id.clone()],
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\ncharlie\n"
+    );
+    git::apply_reference_lines(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        &[line_id],
+        GitReviewDiffIntent::ApplyChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\nbravo\ncharlie\n"
+    );
+
+    let (project, repo) = temp_repo("review-reference-deleted-line");
+    write_file(&project.root, "notes.txt", "alpha\nbravo\ncharlie\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "notes.txt", "alpha\ncharlie\n");
+    commit_all(&repo, "delete bravo");
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    let file_id = diff.files[0].id.clone();
+    let hunk_id = diff.files[0].hunks[0].id.clone();
+    let line_id = diff.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Deletion && line.content == "bravo")
+        .unwrap()
+        .id
+        .clone();
+    git::apply_reference_lines(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        &[line_id.clone()],
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\nbravo\ncharlie\n"
+    );
+    git::apply_reference_lines(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        &[line_id],
+        GitReviewDiffIntent::ApplyChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\ncharlie\n"
+    );
+}
+
+#[test]
+fn git_reference_hunk_targets_apply_revert_and_stage_index_changes() {
+    let (project, repo) = temp_repo("review-reference-hunks");
+    write_file(&project.root, "notes.txt", "alpha\nbravo\ncharlie\ndelta\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "notes.txt", "alpha\nBRAVO\nCHARLIE\ndelta\n");
+    commit_all(&repo, "modify hunk");
+
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    let file_id = diff.files[0].id.clone();
+    let hunk_id = diff.files[0].hunks[0].id.clone();
+
+    git::apply_reference_hunk(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\nbravo\ncharlie\ndelta\n"
+    );
+    git::apply_reference_hunk(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        GitReviewDiffIntent::ApplyChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "alpha\nBRAVO\nCHARLIE\ndelta\n"
+    );
+
+    git::apply_reference_hunk(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Index,
+    )
+    .unwrap();
+    let staged = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Staged,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        staged.files[0].hunks[0]
+            .lines
+            .iter()
+            .any(|line| { line.kind == GitLineKind::Addition && line.content == "bravo" })
+    );
+
+    git::apply_reference_hunk(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        GitReviewDiffIntent::ApplyChange,
+        GitReviewDiffDestination::Index,
+    )
+    .unwrap();
+    let staged = git::repository_diff(
+        &project.root,
+        GitDiffOptions {
+            mode: GitDiffMode::Staged,
+            ..GitDiffOptions::default()
+        },
+    )
+    .unwrap();
+    assert!(staged.files.is_empty());
+}
+
+#[test]
+fn git_reference_targets_report_dirty_and_partial_selection_errors() {
+    let (project, repo) = temp_repo("review-reference-errors");
+    write_file(&project.root, "notes.txt", "alpha\ncharlie\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "notes.txt", "alpha\nbravo\ncharlie\n");
+    commit_all(&repo, "add bravo");
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    let file_id = diff.files[0].id.clone();
+    let hunk_id = diff.files[0].hunks[0].id.clone();
+    let line_id = diff.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Addition && line.content == "bravo")
+        .unwrap()
+        .id
+        .clone();
+
+    write_file(&project.root, "notes.txt", "ALPHA\nbravo\ncharlie\n");
+    let error = git::apply_reference_lines(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        &[line_id],
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap_err();
+    assert_eq!(
+        review_error_kind(error),
+        GitReviewDiffErrorKind::DirtyWorktreeConflict
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("notes.txt")).unwrap(),
+        "ALPHA\nbravo\ncharlie\n"
+    );
+
+    let (project, repo) = temp_repo("review-reference-partial-selection");
+    write_file(&project.root, "notes.txt", "alpha\nbravo\ncharlie\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "notes.txt", "alpha\nBRAVO\ncharlie\n");
+    commit_all(&repo, "mixed change");
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    let file_id = diff.files[0].id.clone();
+    let hunk_id = diff.files[0].hunks[0].id.clone();
+    let addition = diff.files[0].hunks[0]
+        .lines
+        .iter()
+        .find(|line| line.kind == GitLineKind::Addition && line.content == "BRAVO")
+        .unwrap()
+        .id
+        .clone();
+    let error = git::apply_reference_lines(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        &[addition],
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap_err();
+    assert_eq!(
+        review_error_kind(error),
+        GitReviewDiffErrorKind::PartialLineSelectionUnsafe
+    );
+}
+
+#[test]
+fn git_reference_targets_handle_renamed_file_content_hunks() {
+    let (project, repo) = temp_repo("review-reference-rename");
+    write_file(&project.root, "old.txt", "alpha\ncharlie\n");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    std::fs::rename(project.root.join("old.txt"), project.root.join("new.txt")).unwrap();
+    write_file(&project.root, "new.txt", "alpha\nbravo\ncharlie\n");
+    commit_all(&repo, "rename and edit");
+
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    assert_eq!(diff.files[0].change, git::GitChangeKind::Renamed);
+    let file_id = diff.files[0].id.clone();
+    let hunk_id = diff.files[0].hunks[0].id.clone();
+    git::apply_reference_hunk(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        GitReviewDiffIntent::RevertChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert!(!project.root.join("old.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("new.txt")).unwrap(),
+        "alpha\ncharlie\n"
+    );
+    git::apply_reference_hunk(
+        &project.root,
+        "master...HEAD",
+        &file_id,
+        &hunk_id,
+        GitReviewDiffIntent::ApplyChange,
+        GitReviewDiffDestination::Worktree,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("new.txt")).unwrap(),
+        "alpha\nbravo\ncharlie\n"
+    );
+}
+
+#[test]
+fn git_reference_hunks_preserve_crlf_and_no_newline_markers() {
+    let (project, repo) = temp_repo("review-reference-line-endings");
+    write_file(&project.root, "crlf.txt", "alpha\r\ncharlie\r\n");
+    write_file(&project.root, "eof.txt", "alpha\ncharlie");
+    commit_all(&repo, "initial");
+    git::create_branch(&project.root, "feature").unwrap();
+    git::checkout_branch(&project.root, "feature").unwrap();
+    write_file(&project.root, "crlf.txt", "alpha\r\nbravo\r\ncharlie\r\n");
+    write_file(&project.root, "eof.txt", "alpha\nbravo\ncharlie");
+    commit_all(&repo, "line ending changes");
+
+    let diff =
+        git::repository_diff_reference(&project.root, "master...HEAD", 3, &[], true, 1_000_000)
+            .unwrap();
+    for file in &diff.files {
+        git::apply_reference_hunk(
+            &project.root,
+            "master...HEAD",
+            &file.id,
+            &file.hunks[0].id,
+            GitReviewDiffIntent::RevertChange,
+            GitReviewDiffDestination::Worktree,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("crlf.txt")).unwrap(),
+        "alpha\r\ncharlie\r\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("eof.txt")).unwrap(),
+        "alpha\ncharlie"
+    );
+
+    for file in &diff.files {
+        git::apply_reference_hunk(
+            &project.root,
+            "master...HEAD",
+            &file.id,
+            &file.hunks[0].id,
+            GitReviewDiffIntent::ApplyChange,
+            GitReviewDiffDestination::Worktree,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("crlf.txt")).unwrap(),
+        "alpha\r\nbravo\r\ncharlie\r\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.root.join("eof.txt")).unwrap(),
+        "alpha\nbravo\ncharlie"
+    );
 }
 
 #[test]

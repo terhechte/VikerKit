@@ -2303,15 +2303,19 @@ public struct VikerGitDiff: Equatable, Hashable {
     public let mode: VikerGitDiffMode
     public let branch: String?
     public let head: String?
+    public let leftOid: String?
+    public let rightOid: String?
     public let files: [VikerGitFileDiff]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(repositoryRoot: String, mode: VikerGitDiffMode, branch: String?, head: String?, files: [VikerGitFileDiff]) {
+    public init(repositoryRoot: String, mode: VikerGitDiffMode, branch: String?, head: String?, leftOid: String?, rightOid: String?, files: [VikerGitFileDiff]) {
         self.repositoryRoot = repositoryRoot
         self.mode = mode
         self.branch = branch
         self.head = head
+        self.leftOid = leftOid
+        self.rightOid = rightOid
         self.files = files
     }
 
@@ -2335,6 +2339,8 @@ public struct FfiConverterTypeVikerGitDiff: FfiConverterRustBuffer {
                 mode: FfiConverterTypeVikerGitDiffMode.read(from: &buf), 
                 branch: FfiConverterOptionString.read(from: &buf), 
                 head: FfiConverterOptionString.read(from: &buf), 
+                leftOid: FfiConverterOptionString.read(from: &buf), 
+                rightOid: FfiConverterOptionString.read(from: &buf), 
                 files: FfiConverterSequenceTypeVikerGitFileDiff.read(from: &buf)
         )
     }
@@ -2344,6 +2350,8 @@ public struct FfiConverterTypeVikerGitDiff: FfiConverterRustBuffer {
         FfiConverterTypeVikerGitDiffMode.write(value.mode, into: &buf)
         FfiConverterOptionString.write(value.branch, into: &buf)
         FfiConverterOptionString.write(value.head, into: &buf)
+        FfiConverterOptionString.write(value.leftOid, into: &buf)
+        FfiConverterOptionString.write(value.rightOid, into: &buf)
         FfiConverterSequenceTypeVikerGitFileDiff.write(value.files, into: &buf)
     }
 }
@@ -2449,17 +2457,19 @@ public struct VikerGitDiffLine: Equatable, Hashable {
     public let kind: VikerGitLineKind
     public let prefix: String
     public let content: String
+    public let rawContent: String
     public let highlights: [VikerGitPatchHighlight]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, oldLine: UInt64?, newLine: UInt64?, kind: VikerGitLineKind, prefix: String, content: String, highlights: [VikerGitPatchHighlight]) {
+    public init(id: String, oldLine: UInt64?, newLine: UInt64?, kind: VikerGitLineKind, prefix: String, content: String, rawContent: String, highlights: [VikerGitPatchHighlight]) {
         self.id = id
         self.oldLine = oldLine
         self.newLine = newLine
         self.kind = kind
         self.prefix = prefix
         self.content = content
+        self.rawContent = rawContent
         self.highlights = highlights
     }
 
@@ -2485,6 +2495,7 @@ public struct FfiConverterTypeVikerGitDiffLine: FfiConverterRustBuffer {
                 kind: FfiConverterTypeVikerGitLineKind.read(from: &buf), 
                 prefix: FfiConverterString.read(from: &buf), 
                 content: FfiConverterString.read(from: &buf), 
+                rawContent: FfiConverterString.read(from: &buf), 
                 highlights: FfiConverterSequenceTypeVikerGitPatchHighlight.read(from: &buf)
         )
     }
@@ -2496,6 +2507,7 @@ public struct FfiConverterTypeVikerGitDiffLine: FfiConverterRustBuffer {
         FfiConverterTypeVikerGitLineKind.write(value.kind, into: &buf)
         FfiConverterString.write(value.prefix, into: &buf)
         FfiConverterString.write(value.content, into: &buf)
+        FfiConverterString.write(value.rawContent, into: &buf)
         FfiConverterSequenceTypeVikerGitPatchHighlight.write(value.highlights, into: &buf)
     }
 }
@@ -2517,6 +2529,7 @@ public func FfiConverterTypeVikerGitDiffLine_lower(_ value: VikerGitDiffLine) ->
 
 
 public struct VikerGitFileDiff: Equatable, Hashable {
+    public let id: String
     public let oldPath: String?
     public let newPath: String?
     public let change: VikerGitChangeKind
@@ -2525,7 +2538,8 @@ public struct VikerGitFileDiff: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(oldPath: String?, newPath: String?, change: VikerGitChangeKind, binary: Bool, hunks: [VikerGitDiffHunk]) {
+    public init(id: String, oldPath: String?, newPath: String?, change: VikerGitChangeKind, binary: Bool, hunks: [VikerGitDiffHunk]) {
+        self.id = id
         self.oldPath = oldPath
         self.newPath = newPath
         self.change = change
@@ -2549,6 +2563,7 @@ public struct FfiConverterTypeVikerGitFileDiff: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VikerGitFileDiff {
         return
             try VikerGitFileDiff(
+                id: FfiConverterString.read(from: &buf), 
                 oldPath: FfiConverterOptionString.read(from: &buf), 
                 newPath: FfiConverterOptionString.read(from: &buf), 
                 change: FfiConverterTypeVikerGitChangeKind.read(from: &buf), 
@@ -2558,6 +2573,7 @@ public struct FfiConverterTypeVikerGitFileDiff: FfiConverterRustBuffer {
     }
 
     public static func write(_ value: VikerGitFileDiff, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
         FfiConverterOptionString.write(value.oldPath, into: &buf)
         FfiConverterOptionString.write(value.newPath, into: &buf)
         FfiConverterTypeVikerGitChangeKind.write(value.change, into: &buf)
@@ -4385,6 +4401,22 @@ public enum VikerError: Swift.Error, Equatable, Hashable, Foundation.LocalizedEr
     )
     case EditorUnavailable(message: String
     )
+    case GitStaleDiffTarget(message: String
+    )
+    case GitTargetNotFound(message: String
+    )
+    case GitPatchDoesNotApply(message: String
+    )
+    case GitDirtyWorktreeConflict(message: String
+    )
+    case GitIndexConflict(message: String
+    )
+    case GitBinaryTargetUnsupported(message: String
+    )
+    case GitUnsupportedTarget(message: String
+    )
+    case GitPartialLineSelectionUnsafe(message: String
+    )
 
     
 
@@ -4423,6 +4455,30 @@ public struct FfiConverterTypeVikerError: FfiConverterRustBuffer {
         case 3: return .EditorUnavailable(
             message: try FfiConverterString.read(from: &buf)
             )
+        case 4: return .GitStaleDiffTarget(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 5: return .GitTargetNotFound(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .GitPatchDoesNotApply(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 7: return .GitDirtyWorktreeConflict(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .GitIndexConflict(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .GitBinaryTargetUnsupported(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .GitUnsupportedTarget(
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 11: return .GitPartialLineSelectionUnsafe(
+            message: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -4447,6 +4503,46 @@ public struct FfiConverterTypeVikerError: FfiConverterRustBuffer {
         
         case let .EditorUnavailable(message):
             writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitStaleDiffTarget(message):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitTargetNotFound(message):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitPatchDoesNotApply(message):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitDirtyWorktreeConflict(message):
+            writeInt(&buf, Int32(7))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitIndexConflict(message):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitBinaryTargetUnsupported(message):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitUnsupportedTarget(message):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .GitPartialLineSelectionUnsafe(message):
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(message, into: &buf)
             
         }
@@ -4817,6 +4913,147 @@ public func FfiConverterTypeVikerGitLineKind_lift(_ buf: RustBuffer) throws -> V
 #endif
 public func FfiConverterTypeVikerGitLineKind_lower(_ value: VikerGitLineKind) -> RustBuffer {
     return FfiConverterTypeVikerGitLineKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum VikerGitReviewDiffDestination: Equatable, Hashable {
+    
+    case worktree
+    case index
+    case worktreeAndIndex
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension VikerGitReviewDiffDestination: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVikerGitReviewDiffDestination: FfiConverterRustBuffer {
+    typealias SwiftType = VikerGitReviewDiffDestination
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VikerGitReviewDiffDestination {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .worktree
+        
+        case 2: return .index
+        
+        case 3: return .worktreeAndIndex
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: VikerGitReviewDiffDestination, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .worktree:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .index:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .worktreeAndIndex:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitReviewDiffDestination_lift(_ buf: RustBuffer) throws -> VikerGitReviewDiffDestination {
+    return try FfiConverterTypeVikerGitReviewDiffDestination.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitReviewDiffDestination_lower(_ value: VikerGitReviewDiffDestination) -> RustBuffer {
+    return FfiConverterTypeVikerGitReviewDiffDestination.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum VikerGitReviewDiffIntent: Equatable, Hashable {
+    
+    case applyChange
+    case revertChange
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension VikerGitReviewDiffIntent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVikerGitReviewDiffIntent: FfiConverterRustBuffer {
+    typealias SwiftType = VikerGitReviewDiffIntent
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VikerGitReviewDiffIntent {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .applyChange
+        
+        case 2: return .revertChange
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: VikerGitReviewDiffIntent, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .applyChange:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .revertChange:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitReviewDiffIntent_lift(_ buf: RustBuffer) throws -> VikerGitReviewDiffIntent {
+    return try FfiConverterTypeVikerGitReviewDiffIntent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVikerGitReviewDiffIntent_lower(_ value: VikerGitReviewDiffIntent) -> RustBuffer {
+    return FfiConverterTypeVikerGitReviewDiffIntent.lower(value)
 }
 
 
@@ -6526,6 +6763,42 @@ public func vikerGitApplyPatch(path: String, patch: String, mode: VikerGitApplyP
     )
 })
 }
+public func vikerGitApplyReferenceFile(path: String, reference: String, fileId: String, intent: VikerGitReviewDiffIntent, destination: VikerGitReviewDiffDestination)throws  -> VikerGitOperationReport  {
+    return try  FfiConverterTypeVikerGitOperationReport_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_apply_reference_file(
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(reference),
+        FfiConverterString.lower(fileId),
+        FfiConverterTypeVikerGitReviewDiffIntent_lower(intent),
+        FfiConverterTypeVikerGitReviewDiffDestination_lower(destination),$0
+    )
+})
+}
+public func vikerGitApplyReferenceHunk(path: String, reference: String, fileId: String, hunkId: String, intent: VikerGitReviewDiffIntent, destination: VikerGitReviewDiffDestination)throws  -> VikerGitOperationReport  {
+    return try  FfiConverterTypeVikerGitOperationReport_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_apply_reference_hunk(
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(reference),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(hunkId),
+        FfiConverterTypeVikerGitReviewDiffIntent_lower(intent),
+        FfiConverterTypeVikerGitReviewDiffDestination_lower(destination),$0
+    )
+})
+}
+public func vikerGitApplyReferenceLines(path: String, reference: String, fileId: String, hunkId: String, lineIds: [String], intent: VikerGitReviewDiffIntent, destination: VikerGitReviewDiffDestination)throws  -> VikerGitOperationReport  {
+    return try  FfiConverterTypeVikerGitOperationReport_lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
+    uniffi_viker_swift_fn_func_viker_git_apply_reference_lines(
+        FfiConverterString.lower(path),
+        FfiConverterString.lower(reference),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(hunkId),
+        FfiConverterSequenceString.lower(lineIds),
+        FfiConverterTypeVikerGitReviewDiffIntent_lower(intent),
+        FfiConverterTypeVikerGitReviewDiffDestination_lower(destination),$0
+    )
+})
+}
 public func vikerGitBranches(path: String)throws  -> [VikerGitBranch]  {
     return try  FfiConverterSequenceTypeVikerGitBranch.lift(try rustCallWithError(FfiConverterTypeVikerError_lift) {
     uniffi_viker_swift_fn_func_viker_git_branches(
@@ -6844,6 +7117,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_viker_swift_checksum_func_viker_git_apply_patch() != 58074) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_viker_swift_checksum_func_viker_git_apply_reference_file() != 61427) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_viker_swift_checksum_func_viker_git_apply_reference_hunk() != 10373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_viker_swift_checksum_func_viker_git_apply_reference_lines() != 55714) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_viker_swift_checksum_func_viker_git_branches() != 45815) {

@@ -23,6 +23,14 @@ pub enum VikerError {
     Io { message: String },
     InvalidInput { message: String },
     EditorUnavailable { message: String },
+    GitStaleDiffTarget { message: String },
+    GitTargetNotFound { message: String },
+    GitPatchDoesNotApply { message: String },
+    GitDirtyWorktreeConflict { message: String },
+    GitIndexConflict { message: String },
+    GitBinaryTargetUnsupported { message: String },
+    GitUnsupportedTarget { message: String },
+    GitPartialLineSelectionUnsafe { message: String },
 }
 
 impl std::fmt::Display for VikerError {
@@ -31,6 +39,14 @@ impl std::fmt::Display for VikerError {
             Self::Io { message } => write!(f, "{message}"),
             Self::InvalidInput { message } => write!(f, "{message}"),
             Self::EditorUnavailable { message } => write!(f, "{message}"),
+            Self::GitStaleDiffTarget { message } => write!(f, "{message}"),
+            Self::GitTargetNotFound { message } => write!(f, "{message}"),
+            Self::GitPatchDoesNotApply { message } => write!(f, "{message}"),
+            Self::GitDirtyWorktreeConflict { message } => write!(f, "{message}"),
+            Self::GitIndexConflict { message } => write!(f, "{message}"),
+            Self::GitBinaryTargetUnsupported { message } => write!(f, "{message}"),
+            Self::GitUnsupportedTarget { message } => write!(f, "{message}"),
+            Self::GitPartialLineSelectionUnsafe { message } => write!(f, "{message}"),
         }
     }
 }
@@ -39,6 +55,35 @@ impl std::error::Error for VikerError {}
 
 impl From<anyhow::Error> for VikerError {
     fn from(value: anyhow::Error) -> Self {
+        if let Some(error) = value.downcast_ref::<core_git::GitReviewDiffError>() {
+            let message = error.message.clone();
+            return match error.kind {
+                core_git::GitReviewDiffErrorKind::StaleDiffTarget => {
+                    Self::GitStaleDiffTarget { message }
+                }
+                core_git::GitReviewDiffErrorKind::TargetNotFound => {
+                    Self::GitTargetNotFound { message }
+                }
+                core_git::GitReviewDiffErrorKind::PatchDoesNotApply => {
+                    Self::GitPatchDoesNotApply { message }
+                }
+                core_git::GitReviewDiffErrorKind::DirtyWorktreeConflict => {
+                    Self::GitDirtyWorktreeConflict { message }
+                }
+                core_git::GitReviewDiffErrorKind::IndexConflict => {
+                    Self::GitIndexConflict { message }
+                }
+                core_git::GitReviewDiffErrorKind::BinaryTargetUnsupported => {
+                    Self::GitBinaryTargetUnsupported { message }
+                }
+                core_git::GitReviewDiffErrorKind::UnsupportedTarget => {
+                    Self::GitUnsupportedTarget { message }
+                }
+                core_git::GitReviewDiffErrorKind::PartialLineSelectionUnsafe => {
+                    Self::GitPartialLineSelectionUnsafe { message }
+                }
+            };
+        }
         Self::Io {
             message: value.to_string(),
         }
@@ -312,6 +357,19 @@ pub enum VikerGitApplyPatchMode {
     DiscardFromWorktree,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum VikerGitReviewDiffIntent {
+    ApplyChange,
+    RevertChange,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum VikerGitReviewDiffDestination {
+    Worktree,
+    Index,
+    WorktreeAndIndex,
+}
+
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct VikerGitPatchHighlight {
     pub start_column: u64,
@@ -328,6 +386,7 @@ pub struct VikerGitDiffLine {
     pub kind: VikerGitLineKind,
     pub prefix: String,
     pub content: String,
+    pub raw_content: String,
     pub highlights: Vec<VikerGitPatchHighlight>,
 }
 
@@ -345,6 +404,7 @@ pub struct VikerGitDiffHunk {
 
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct VikerGitFileDiff {
+    pub id: String,
     pub old_path: Option<String>,
     pub new_path: Option<String>,
     pub change: VikerGitChangeKind,
@@ -358,6 +418,8 @@ pub struct VikerGitDiff {
     pub mode: VikerGitDiffMode,
     pub branch: Option<String>,
     pub head: Option<String>,
+    pub left_oid: Option<String>,
+    pub right_oid: Option<String>,
     pub files: Vec<VikerGitFileDiff>,
 }
 
@@ -862,6 +924,63 @@ pub fn viker_git_apply_patch(
         path,
         &patch,
         git_apply_patch_mode_to_core(mode),
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_apply_reference_file(
+    path: String,
+    reference: String,
+    file_id: String,
+    intent: VikerGitReviewDiffIntent,
+    destination: VikerGitReviewDiffDestination,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::apply_reference_file(
+        path,
+        &reference,
+        &file_id,
+        git_review_intent_to_core(intent),
+        git_review_destination_to_core(destination),
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_apply_reference_hunk(
+    path: String,
+    reference: String,
+    file_id: String,
+    hunk_id: String,
+    intent: VikerGitReviewDiffIntent,
+    destination: VikerGitReviewDiffDestination,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::apply_reference_hunk(
+        path,
+        &reference,
+        &file_id,
+        &hunk_id,
+        git_review_intent_to_core(intent),
+        git_review_destination_to_core(destination),
+    )?))
+}
+
+#[uniffi::export]
+pub fn viker_git_apply_reference_lines(
+    path: String,
+    reference: String,
+    file_id: String,
+    hunk_id: String,
+    line_ids: Vec<String>,
+    intent: VikerGitReviewDiffIntent,
+    destination: VikerGitReviewDiffDestination,
+) -> Result<VikerGitOperationReport, VikerError> {
+    Ok(git_report_from_core(core_git::apply_reference_lines(
+        path,
+        &reference,
+        &file_id,
+        &hunk_id,
+        &line_ids,
+        git_review_intent_to_core(intent),
+        git_review_destination_to_core(destination),
     )?))
 }
 
@@ -3121,6 +3240,25 @@ fn git_apply_patch_mode_to_core(mode: VikerGitApplyPatchMode) -> core_git::GitAp
     }
 }
 
+fn git_review_intent_to_core(intent: VikerGitReviewDiffIntent) -> core_git::GitReviewDiffIntent {
+    match intent {
+        VikerGitReviewDiffIntent::ApplyChange => core_git::GitReviewDiffIntent::ApplyChange,
+        VikerGitReviewDiffIntent::RevertChange => core_git::GitReviewDiffIntent::RevertChange,
+    }
+}
+
+fn git_review_destination_to_core(
+    destination: VikerGitReviewDiffDestination,
+) -> core_git::GitReviewDiffDestination {
+    match destination {
+        VikerGitReviewDiffDestination::Worktree => core_git::GitReviewDiffDestination::Worktree,
+        VikerGitReviewDiffDestination::Index => core_git::GitReviewDiffDestination::Index,
+        VikerGitReviewDiffDestination::WorktreeAndIndex => {
+            core_git::GitReviewDiffDestination::WorktreeAndIndex
+        }
+    }
+}
+
 fn git_change_from_core(change: core_git::GitChangeKind) -> VikerGitChangeKind {
     match change {
         core_git::GitChangeKind::Added => VikerGitChangeKind::Added,
@@ -3150,6 +3288,8 @@ fn git_diff_from_core(diff: core_git::GitDiff) -> VikerGitDiff {
         mode: git_diff_mode_from_core(diff.mode),
         branch: diff.branch,
         head: diff.head,
+        left_oid: diff.left_oid,
+        right_oid: diff.right_oid,
         files: diff
             .files
             .into_iter()
@@ -3160,6 +3300,7 @@ fn git_diff_from_core(diff: core_git::GitDiff) -> VikerGitDiff {
 
 fn git_file_diff_from_core(file: core_git::GitFileDiff) -> VikerGitFileDiff {
     VikerGitFileDiff {
+        id: file.id,
         old_path: file.old_path,
         new_path: file.new_path,
         change: git_change_from_core(file.change),
@@ -3189,6 +3330,7 @@ fn git_line_from_core(line: core_git::GitDiffLine) -> VikerGitDiffLine {
         kind: git_line_kind_from_core(line.kind),
         prefix: line.prefix,
         content: line.content,
+        raw_content: line.raw_content,
         highlights: line
             .highlights
             .into_iter()
@@ -4083,8 +4225,49 @@ mod tests {
         assert_eq!(commit.summary, "add bravo");
         let head = commit.oid.clone();
         let reference_diff =
-            viker_git_diff_reference(root_path.clone(), head, 3, Vec::new(), false).unwrap();
+            viker_git_diff_reference(root_path.clone(), head.clone(), 3, Vec::new(), false)
+                .unwrap();
         assert_eq!(reference_diff.mode, VikerGitDiffMode::Reference);
+        assert!(reference_diff.left_oid.is_some());
+        assert!(reference_diff.right_oid.is_some());
+        let reference_file = &reference_diff.files[0];
+        assert!(!reference_file.id.is_empty());
+        let reference_hunk = &reference_file.hunks[0];
+        let reference_line_id = reference_hunk
+            .lines
+            .iter()
+            .find(|line| line.kind == VikerGitLineKind::Addition && line.content == "bravo")
+            .unwrap()
+            .id
+            .clone();
+        viker_git_apply_reference_lines(
+            root_path.clone(),
+            head.clone(),
+            reference_file.id.clone(),
+            reference_hunk.id.clone(),
+            vec![reference_line_id.clone()],
+            VikerGitReviewDiffIntent::RevertChange,
+            VikerGitReviewDiffDestination::Worktree,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "alpha\ncharlie\n"
+        );
+        viker_git_apply_reference_lines(
+            root_path.clone(),
+            head,
+            reference_file.id.clone(),
+            reference_hunk.id.clone(),
+            vec![reference_line_id],
+            VikerGitReviewDiffIntent::ApplyChange,
+            VikerGitReviewDiffDestination::Worktree,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+            "alpha\nbravo\ncharlie\n"
+        );
 
         write_file(&root, ".gitignore", "build/\n*.log\n");
         viker_git_stage_files(root_path.clone(), vec![".gitignore".to_string()]).unwrap();

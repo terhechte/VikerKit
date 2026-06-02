@@ -62,6 +62,7 @@ pub struct GitDiffLine {
     pub kind: GitLineKind,
     pub prefix: String,
     pub content: String,
+    pub raw_content: String,
     pub highlights: Vec<GitPatchHighlight>,
 }
 
@@ -79,6 +80,7 @@ pub struct GitDiffHunk {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitFileDiff {
+    pub id: String,
     pub old_path: Option<String>,
     pub new_path: Option<String>,
     pub change: GitChangeKind,
@@ -96,6 +98,8 @@ pub struct GitDiff {
     pub mode: GitDiffMode,
     pub branch: Option<String>,
     pub head: Option<String>,
+    pub left_oid: Option<String>,
+    pub right_oid: Option<String>,
     pub files: Vec<GitFileDiff>,
 }
 
@@ -114,6 +118,45 @@ pub enum GitApplyPatchMode {
     UnstageFromIndex,
     DiscardFromWorktree,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GitReviewDiffIntent {
+    ApplyChange,
+    RevertChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GitReviewDiffDestination {
+    Worktree,
+    Index,
+    WorktreeAndIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GitReviewDiffErrorKind {
+    StaleDiffTarget,
+    TargetNotFound,
+    PatchDoesNotApply,
+    DirtyWorktreeConflict,
+    IndexConflict,
+    BinaryTargetUnsupported,
+    UnsupportedTarget,
+    PartialLineSelectionUnsafe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitReviewDiffError {
+    pub kind: GitReviewDiffErrorKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for GitReviewDiffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for GitReviewDiffError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitCommitSummary {
@@ -434,7 +477,15 @@ pub fn repository_diff(path: impl AsRef<Path>, options: GitDiffOptions) -> Resul
         GitDiffMode::Reference => bail!("use repository_diff_reference for reference diffs"),
     };
 
-    build_repository_diff(&repo, root, options.mode, diff, options.max_highlight_bytes)
+    build_repository_diff(
+        &repo,
+        root,
+        options.mode,
+        diff,
+        options.max_highlight_bytes,
+        None,
+        None,
+    )
 }
 
 pub fn repository_diff_reference(
@@ -466,22 +517,31 @@ pub fn repository_diff_reference(
     };
     let mut diff_options = diff_options_from(&options);
 
-    let mut diff = if let Some((left, right)) = reference.split_once("...") {
+    let (mut diff, left_oid, right_oid) = if let Some((left, right)) = reference.split_once("...") {
         let left_commit = repo.revparse_single(left.trim())?.peel_to_commit()?;
         let right_commit = repo.revparse_single(right.trim())?.peel_to_commit()?;
         let base_oid = repo.merge_base(left_commit.id(), right_commit.id())?;
         let base_tree = repo.find_commit(base_oid)?.tree()?;
         let right_tree = right_commit.tree()?;
-        repo.diff_tree_to_tree(Some(&base_tree), Some(&right_tree), Some(&mut diff_options))?
+        (
+            repo.diff_tree_to_tree(Some(&base_tree), Some(&right_tree), Some(&mut diff_options))?,
+            Some(base_oid),
+            Some(right_commit.id()),
+        )
     } else {
         let commit = repo.revparse_single(reference)?.peel_to_commit()?;
-        let old_tree = if commit.parent_count() == 0 {
-            empty_tree(&repo)?
+        let (old_tree, left_oid) = if commit.parent_count() == 0 {
+            (empty_tree(&repo)?, None)
         } else {
-            commit.parent(0)?.tree()?
+            let parent = commit.parent(0)?;
+            (parent.tree()?, Some(parent.id()))
         };
         let new_tree = commit.tree()?;
-        repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(&mut diff_options))?
+        (
+            repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), Some(&mut diff_options))?,
+            left_oid,
+            Some(commit.id()),
+        )
     };
 
     if find_renames {
@@ -496,6 +556,8 @@ pub fn repository_diff_reference(
         GitDiffMode::Reference,
         diff,
         max_highlight_bytes,
+        left_oid,
+        right_oid,
     )
 }
 
@@ -522,6 +584,8 @@ fn build_repository_diff(
     mode: GitDiffMode,
     diff: git2::Diff<'_>,
     max_highlight_bytes: usize,
+    left_oid: Option<Oid>,
+    right_oid: Option<Oid>,
 ) -> Result<GitDiff> {
     let state = RefCell::new(DiffBuildState::default());
     {
@@ -552,6 +616,7 @@ fn build_repository_diff(
     }
 
     let mut files = state.into_inner().files;
+    finalize_diff_ids(&mut files);
     for file in &mut files {
         add_code_highlights(repo, &root, mode, file, max_highlight_bytes);
     }
@@ -567,6 +632,8 @@ fn build_repository_diff(
             .as_ref()
             .and_then(|head| head.target())
             .map(|oid| oid.to_string()),
+        left_oid: left_oid.map(|oid| oid.to_string()),
+        right_oid: right_oid.map(|oid| oid.to_string()),
         files,
     })
 }
@@ -738,6 +805,108 @@ pub fn apply_patch(
         GitApplyPatchMode::UnstageFromIndex => "unstaged patch from index".to_string(),
         GitApplyPatchMode::DiscardFromWorktree => "discarded patch from worktree".to_string(),
     }))
+}
+
+pub fn apply_reference_file(
+    path: impl AsRef<Path>,
+    reference: &str,
+    file_id: &str,
+    intent: GitReviewDiffIntent,
+    destination: GitReviewDiffDestination,
+) -> Result<GitOperationReport> {
+    let anchor = path.as_ref().to_path_buf();
+    let repo = Repository::discover(&anchor)?;
+    let diff = review_reference_diff(&anchor, reference)?;
+    let file = find_review_file(&diff, file_id)?;
+    ensure_review_file_supported(file, ReviewTargetKind::File)?;
+    let patch = file_patch_for_review(file, ReviewPatchHeaderMode::Original)?;
+    apply_review_patch(
+        &repo,
+        &patch,
+        intent,
+        destination,
+        &review_target_paths(file),
+    )?;
+    Ok(report(format!(
+        "{} file {}",
+        review_intent_verb(intent),
+        review_file_label(file)
+    )))
+}
+
+pub fn apply_reference_hunk(
+    path: impl AsRef<Path>,
+    reference: &str,
+    file_id: &str,
+    hunk_id: &str,
+    intent: GitReviewDiffIntent,
+    destination: GitReviewDiffDestination,
+) -> Result<GitOperationReport> {
+    let anchor = path.as_ref().to_path_buf();
+    let repo = Repository::discover(&anchor)?;
+    let diff = review_reference_diff(&anchor, reference)?;
+    let file = find_review_file(&diff, file_id)?;
+    ensure_review_file_supported(file, ReviewTargetKind::Hunk)?;
+    let hunk = find_review_hunk(file, hunk_id)?;
+    let header_mode = review_header_mode_for_content_target(file);
+    let patch = hunk_patch_for_review(file, hunk, header_mode)?;
+    if let Err(error) = apply_review_patch(
+        &repo,
+        &patch,
+        intent,
+        destination,
+        &review_target_paths(file),
+    ) {
+        let error_kind = review_error_kind_from_anyhow(&error);
+        if destination == GitReviewDiffDestination::Worktree
+            && matches!(
+                error_kind,
+                Some(
+                    GitReviewDiffErrorKind::PatchDoesNotApply
+                        | GitReviewDiffErrorKind::DirtyWorktreeConflict
+                )
+            )
+        {
+            apply_worktree_hunk_from_blobs(&repo, file, hunk, intent)?;
+        } else {
+            return Err(error);
+        }
+    }
+    Ok(report(format!(
+        "{} hunk {hunk_id}",
+        review_intent_verb(intent)
+    )))
+}
+
+pub fn apply_reference_lines(
+    path: impl AsRef<Path>,
+    reference: &str,
+    file_id: &str,
+    hunk_id: &str,
+    line_ids: &[String],
+    intent: GitReviewDiffIntent,
+    destination: GitReviewDiffDestination,
+) -> Result<GitOperationReport> {
+    let anchor = path.as_ref().to_path_buf();
+    let repo = Repository::discover(&anchor)?;
+    let diff = review_reference_diff(&anchor, reference)?;
+    let file = find_review_file(&diff, file_id)?;
+    ensure_review_file_supported(file, ReviewTargetKind::Line)?;
+    let hunk = find_review_hunk(file, hunk_id)?;
+    let header_mode = review_header_mode_for_content_target(file);
+    let patch = selected_lines_patch_for_review(file, hunk, line_ids, header_mode)?;
+    apply_review_patch(
+        &repo,
+        &patch,
+        intent,
+        destination,
+        &review_target_paths(file),
+    )?;
+    Ok(report(format!(
+        "{} {} line(s)",
+        review_intent_verb(intent),
+        line_ids.len()
+    )))
 }
 
 pub fn delete_files(path: impl AsRef<Path>, paths: &[String]) -> Result<GitOperationReport> {
@@ -1225,6 +1394,446 @@ fn apply_patch_with_repo(repo: &Repository, patch: &str, mode: GitApplyPatchMode
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ReviewTargetKind {
+    File,
+    Hunk,
+    Line,
+}
+
+#[derive(Clone, Copy)]
+enum ReviewPatchHeaderMode {
+    Original,
+    ContentAtRightPath,
+}
+
+fn review_reference_diff(path: impl AsRef<Path>, reference: &str) -> Result<GitDiff> {
+    repository_diff_reference(
+        path,
+        reference,
+        3,
+        &[],
+        true,
+        GitDiffOptions::default().max_highlight_bytes,
+    )
+}
+
+fn find_review_file<'a>(diff: &'a GitDiff, file_id: &str) -> Result<&'a GitFileDiff> {
+    if let Some(file) = diff.files.iter().find(|file| file.id == file_id) {
+        return Ok(file);
+    }
+    if diff
+        .files
+        .iter()
+        .any(|file| file_id.starts_with(&file_id_hint(file)))
+    {
+        return review_error(
+            GitReviewDiffErrorKind::StaleDiffTarget,
+            "diff target is stale; refresh the review diff",
+        );
+    }
+    review_error(
+        GitReviewDiffErrorKind::TargetNotFound,
+        "diff file target was not found",
+    )
+}
+
+fn find_review_hunk<'a>(file: &'a GitFileDiff, hunk_id: &str) -> Result<&'a GitDiffHunk> {
+    file.hunks
+        .iter()
+        .find(|hunk| hunk.id == hunk_id)
+        .map(Ok)
+        .unwrap_or_else(|| {
+            review_error(
+                GitReviewDiffErrorKind::TargetNotFound,
+                "diff hunk target was not found",
+            )
+        })
+}
+
+fn ensure_review_file_supported(file: &GitFileDiff, kind: ReviewTargetKind) -> Result<()> {
+    if file.binary {
+        return review_error(
+            GitReviewDiffErrorKind::BinaryTargetUnsupported,
+            "binary diff targets are not supported",
+        );
+    }
+    if matches!(
+        file.change,
+        GitChangeKind::Typechange | GitChangeKind::Conflicted | GitChangeKind::Unknown
+    ) {
+        return review_error(
+            GitReviewDiffErrorKind::UnsupportedTarget,
+            "mode, submodule, conflicted, and unknown diff targets are not supported",
+        );
+    }
+    if matches!(kind, ReviewTargetKind::File)
+        && matches!(file.change, GitChangeKind::Renamed | GitChangeKind::Copied)
+    {
+        return review_error(
+            GitReviewDiffErrorKind::UnsupportedTarget,
+            "whole-file rename and copy operations are not supported",
+        );
+    }
+    if file.hunks.is_empty() {
+        return review_error(
+            GitReviewDiffErrorKind::UnsupportedTarget,
+            "diff target has no textual hunks to apply",
+        );
+    }
+    Ok(())
+}
+
+fn review_header_mode_for_content_target(file: &GitFileDiff) -> ReviewPatchHeaderMode {
+    if matches!(file.change, GitChangeKind::Renamed | GitChangeKind::Copied) {
+        ReviewPatchHeaderMode::ContentAtRightPath
+    } else {
+        ReviewPatchHeaderMode::Original
+    }
+}
+
+fn file_patch_for_review(file: &GitFileDiff, mode: ReviewPatchHeaderMode) -> Result<String> {
+    if file.hunks.is_empty() {
+        return review_error(
+            GitReviewDiffErrorKind::UnsupportedTarget,
+            "diff target has no textual hunks to apply",
+        );
+    }
+    let mut patch = file_patch_header_for(file, mode);
+    for hunk in &file.hunks {
+        patch.push_str(raw_hunk_body(hunk)?);
+    }
+    Ok(patch)
+}
+
+fn hunk_patch_for_review(
+    file: &GitFileDiff,
+    hunk: &GitDiffHunk,
+    mode: ReviewPatchHeaderMode,
+) -> Result<String> {
+    let mut patch = file_patch_header_for(file, mode);
+    patch.push_str(raw_hunk_body(hunk)?);
+    Ok(patch)
+}
+
+fn selected_lines_patch_for_review(
+    file: &GitFileDiff,
+    hunk: &GitDiffHunk,
+    line_ids: &[String],
+    mode: ReviewPatchHeaderMode,
+) -> Result<String> {
+    if line_ids.is_empty() {
+        return review_error(
+            GitReviewDiffErrorKind::TargetNotFound,
+            "at least one line target is required",
+        );
+    }
+    let mut selected = Vec::new();
+    for line_id in line_ids {
+        let Some(index) = hunk.lines.iter().position(|line| line.id == *line_id) else {
+            return review_error(
+                GitReviewDiffErrorKind::TargetNotFound,
+                "diff line target was not found",
+            );
+        };
+        let line = &hunk.lines[index];
+        if !matches!(line.kind, GitLineKind::Addition | GitLineKind::Deletion) {
+            return review_error(
+                GitReviewDiffErrorKind::PartialLineSelectionUnsafe,
+                "only added or deleted diff lines can be applied",
+            );
+        }
+        selected.push(index);
+    }
+    selected.sort_unstable();
+    selected.dedup();
+
+    let changed = hunk
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| matches!(line.kind, GitLineKind::Addition | GitLineKind::Deletion))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let has_additions = changed
+        .iter()
+        .any(|index| hunk.lines[*index].kind == GitLineKind::Addition);
+    let has_deletions = changed
+        .iter()
+        .any(|index| hunk.lines[*index].kind == GitLineKind::Deletion);
+
+    if selected == changed {
+        return hunk_patch_for_review(file, hunk, mode);
+    }
+    if has_additions && has_deletions {
+        return review_error(
+            GitReviewDiffErrorKind::PartialLineSelectionUnsafe,
+            "partial line selection in mixed add/delete hunks cannot be applied safely",
+        );
+    }
+    if selected.len() != 1 {
+        return review_error(
+            GitReviewDiffErrorKind::PartialLineSelectionUnsafe,
+            "multi-line partial selections cannot be applied safely",
+        );
+    }
+    single_line_patch_with_header(file, hunk, selected[0], mode)
+}
+
+fn raw_hunk_body(hunk: &GitDiffHunk) -> Result<&str> {
+    hunk.raw_patch
+        .find("@@ ")
+        .map(|index| &hunk.raw_patch[index..])
+        .with_context(|| format!("hunk {} has no textual body", hunk.id))
+}
+
+fn apply_review_patch(
+    repo: &Repository,
+    patch: &str,
+    intent: GitReviewDiffIntent,
+    destination: GitReviewDiffDestination,
+    target_paths: &[String],
+) -> Result<()> {
+    if destination_touches_index(destination) && repo.index()?.has_conflicts() {
+        return review_error(GitReviewDiffErrorKind::IndexConflict, "index has conflicts");
+    }
+    let had_dirty_worktree = destination_touches_worktree(destination)
+        && target_paths_have_worktree_changes(repo, target_paths);
+    let patch = match intent {
+        GitReviewDiffIntent::ApplyChange => patch.to_string(),
+        GitReviewDiffIntent::RevertChange => reverse_patch(patch),
+    };
+    let diff = git2::Diff::from_buffer(patch.as_bytes()).map_err(|err| {
+        review_error_value(
+            GitReviewDiffErrorKind::PatchDoesNotApply,
+            format!("patch could not be parsed: {err}"),
+        )
+    })?;
+    let location = match destination {
+        GitReviewDiffDestination::Worktree => ApplyLocation::WorkDir,
+        GitReviewDiffDestination::Index => ApplyLocation::Index,
+        GitReviewDiffDestination::WorktreeAndIndex => ApplyLocation::Both,
+    };
+    let mut options = ApplyOptions::new();
+    repo.apply(&diff, location, Some(&mut options))
+        .map_err(|err| {
+            if destination_touches_index(destination)
+                && repo.index().is_ok_and(|index| index.has_conflicts())
+            {
+                review_error_value(
+                    GitReviewDiffErrorKind::IndexConflict,
+                    format!("index conflict while applying review target: {err}"),
+                )
+            } else if had_dirty_worktree {
+                review_error_value(
+                    GitReviewDiffErrorKind::DirtyWorktreeConflict,
+                    format!("dirty worktree conflict while applying review target: {err}"),
+                )
+            } else {
+                review_error_value(
+                    GitReviewDiffErrorKind::PatchDoesNotApply,
+                    format!("review target patch does not apply: {err}"),
+                )
+            }
+        })?;
+    Ok(())
+}
+
+fn apply_worktree_hunk_from_blobs(
+    repo: &Repository,
+    file: &GitFileDiff,
+    hunk: &GitDiffHunk,
+    intent: GitReviewDiffIntent,
+) -> Result<()> {
+    let path = file
+        .new_path
+        .as_deref()
+        .or(file.old_path.as_deref())
+        .ok_or_else(|| {
+            review_error_value(
+                GitReviewDiffErrorKind::PatchDoesNotApply,
+                "diff target has no worktree path",
+            )
+        })?;
+    let old_blob = file
+        .old_blob_id
+        .and_then(|oid| repo.find_blob(oid).ok())
+        .ok_or_else(|| {
+            review_error_value(
+                GitReviewDiffErrorKind::PatchDoesNotApply,
+                "diff target has no left-side blob for fallback apply",
+            )
+        })?;
+    let new_blob = file
+        .new_blob_id
+        .and_then(|oid| repo.find_blob(oid).ok())
+        .ok_or_else(|| {
+            review_error_value(
+                GitReviewDiffErrorKind::PatchDoesNotApply,
+                "diff target has no right-side blob for fallback apply",
+            )
+        })?;
+    let old_lines = split_bytes_lines(old_blob.content());
+    let new_lines = split_bytes_lines(new_blob.content());
+    let (
+        source_lines,
+        source_start,
+        source_count,
+        replacement_lines,
+        replacement_start,
+        replacement_count,
+    ) = match intent {
+        GitReviewDiffIntent::ApplyChange => (
+            &old_lines,
+            hunk.old_start,
+            hunk.old_lines,
+            &new_lines,
+            hunk.new_start,
+            hunk.new_lines,
+        ),
+        GitReviewDiffIntent::RevertChange => (
+            &new_lines,
+            hunk.new_start,
+            hunk.new_lines,
+            &old_lines,
+            hunk.old_start,
+            hunk.old_lines,
+        ),
+    };
+    let source = line_range_bytes(source_lines, source_start, source_count)?;
+    let replacement = line_range_bytes(replacement_lines, replacement_start, replacement_count)?;
+    let root = repository_root(repo)?;
+    let absolute = root.join(path);
+    let current = std::fs::read(&absolute)
+        .with_context(|| format!("failed to read {}", absolute.display()))?;
+    let current_lines = split_bytes_lines(&current);
+    let (start, end) = line_range_offsets(&current_lines, source_start, source_count)?;
+    if &current[start..end] != source.as_slice() {
+        return review_error(
+            GitReviewDiffErrorKind::DirtyWorktreeConflict,
+            "dirty worktree conflict while applying review target",
+        );
+    }
+    let mut next = Vec::with_capacity(current.len() - (end - start) + replacement.len());
+    next.extend_from_slice(&current[..start]);
+    next.extend_from_slice(&replacement);
+    next.extend_from_slice(&current[end..]);
+    std::fs::write(&absolute, next)
+        .with_context(|| format!("failed to write {}", absolute.display()))?;
+    Ok(())
+}
+
+fn split_bytes_lines(bytes: &[u8]) -> Vec<&[u8]> {
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            lines.push(&bytes[start..=index]);
+            start = index + 1;
+        }
+    }
+    if start < bytes.len() {
+        lines.push(&bytes[start..]);
+    }
+    lines
+}
+
+fn line_range_bytes(lines: &[&[u8]], start: u32, count: u32) -> Result<Vec<u8>> {
+    let (start, end) = line_range_indices(lines, start, count)?;
+    Ok(lines[start..end].concat())
+}
+
+fn line_range_offsets(lines: &[&[u8]], start: u32, count: u32) -> Result<(usize, usize)> {
+    let (start, end) = line_range_indices(lines, start, count)?;
+    let start_offset = lines[..start].iter().map(|line| line.len()).sum();
+    let end_offset = lines[..end].iter().map(|line| line.len()).sum();
+    Ok((start_offset, end_offset))
+}
+
+fn line_range_indices(lines: &[&[u8]], start: u32, count: u32) -> Result<(usize, usize)> {
+    let start = start.saturating_sub(1) as usize;
+    let end = start + count as usize;
+    if start > lines.len() || end > lines.len() {
+        return review_error(
+            GitReviewDiffErrorKind::PatchDoesNotApply,
+            "diff hunk range is outside the target content",
+        );
+    }
+    Ok((start, end))
+}
+
+fn review_error_kind_from_anyhow(error: &anyhow::Error) -> Option<GitReviewDiffErrorKind> {
+    error
+        .downcast_ref::<GitReviewDiffError>()
+        .map(|error| error.kind)
+}
+
+fn review_target_paths(file: &GitFileDiff) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(path) = file.new_path.as_ref().or(file.old_path.as_ref()) {
+        paths.push(path.clone());
+    }
+    if let Some(path) = file.old_path.as_ref()
+        && !paths.iter().any(|existing| existing == path)
+    {
+        paths.push(path.clone());
+    }
+    paths
+}
+
+fn target_paths_have_worktree_changes(repo: &Repository, paths: &[String]) -> bool {
+    paths.iter().any(|path| {
+        repo.status_file(Path::new(path)).is_ok_and(|status| {
+            status.is_conflicted()
+                || status.contains(Status::WT_NEW)
+                || status.contains(Status::WT_MODIFIED)
+                || status.contains(Status::WT_DELETED)
+                || status.contains(Status::WT_RENAMED)
+                || status.contains(Status::WT_TYPECHANGE)
+        })
+    })
+}
+
+fn destination_touches_index(destination: GitReviewDiffDestination) -> bool {
+    matches!(
+        destination,
+        GitReviewDiffDestination::Index | GitReviewDiffDestination::WorktreeAndIndex
+    )
+}
+
+fn destination_touches_worktree(destination: GitReviewDiffDestination) -> bool {
+    matches!(
+        destination,
+        GitReviewDiffDestination::Worktree | GitReviewDiffDestination::WorktreeAndIndex
+    )
+}
+
+fn review_intent_verb(intent: GitReviewDiffIntent) -> &'static str {
+    match intent {
+        GitReviewDiffIntent::ApplyChange => "applied",
+        GitReviewDiffIntent::RevertChange => "reverted",
+    }
+}
+
+fn review_file_label(file: &GitFileDiff) -> &str {
+    file.new_path
+        .as_deref()
+        .or(file.old_path.as_deref())
+        .unwrap_or("<unknown>")
+}
+
+fn review_error<T>(kind: GitReviewDiffErrorKind, message: impl Into<String>) -> Result<T> {
+    Err(review_error_value(kind, message))
+}
+
+fn review_error_value(kind: GitReviewDiffErrorKind, message: impl Into<String>) -> anyhow::Error {
+    GitReviewDiffError {
+        kind,
+        message: message.into(),
+    }
+    .into()
+}
+
 fn find_hunk_patch(
     path: impl AsRef<Path>,
     mode: GitDiffMode,
@@ -1286,6 +1895,15 @@ fn find_line_patch(
 }
 
 fn single_line_patch(file: &GitFileDiff, hunk: &GitDiffHunk, line_idx: usize) -> Result<String> {
+    single_line_patch_with_header(file, hunk, line_idx, ReviewPatchHeaderMode::Original)
+}
+
+fn single_line_patch_with_header(
+    file: &GitFileDiff,
+    hunk: &GitDiffHunk,
+    line_idx: usize,
+    mode: ReviewPatchHeaderMode,
+) -> Result<String> {
     let line = hunk
         .lines
         .get(line_idx)
@@ -1332,7 +1950,7 @@ fn single_line_patch(file: &GitFileDiff, hunk: &GitDiffHunk, line_idx: usize) ->
         .filter(|line| line.new_line.is_some())
         .count() as u32;
 
-    let mut patch = file_patch_header(file);
+    let mut patch = file_patch_header_for(file, mode);
     patch.push_str(&format!(
         "@@ {} {} @@{}\n",
         unified_range('-', old_start, old_count),
@@ -1346,8 +1964,20 @@ fn single_line_patch(file: &GitFileDiff, hunk: &GitDiffHunk, line_idx: usize) ->
             GitLineKind::Deletion => patch.push('-'),
             GitLineKind::Other => continue,
         }
-        patch.push_str(&line.content);
-        patch.push('\n');
+        patch.push_str(&line.raw_content);
+        if !line.raw_content.ends_with('\n') {
+            patch.push('\n');
+        }
+    }
+    if let Some(marker) = hunk.lines.get(line_idx + 1)
+        && marker.kind == GitLineKind::Other
+        && marker.prefix == "\\"
+    {
+        patch.push('\\');
+        patch.push_str(&marker.raw_content);
+        if !marker.raw_content.ends_with('\n') {
+            patch.push('\n');
+        }
     }
     Ok(patch)
 }
@@ -1379,14 +2009,25 @@ impl DiffBuildState {
     fn push_file(&mut self, delta: git2::DiffDelta<'_>) {
         let old_path = diff_path(delta.old_file().path());
         let new_path = diff_path(delta.new_file().path());
+        let change = change_from_delta(delta.status());
+        let old_blob_id = blob_id(delta.old_file().id());
+        let new_blob_id = blob_id(delta.new_file().id());
+        let id = file_id(
+            old_path.as_deref(),
+            new_path.as_deref(),
+            change,
+            old_blob_id,
+            new_blob_id,
+        );
         self.files.push(GitFileDiff {
+            id,
             old_path,
             new_path,
-            change: change_from_delta(delta.status()),
+            change,
             binary: false,
             hunks: Vec::new(),
-            old_blob_id: blob_id(delta.old_file().id()),
-            new_blob_id: blob_id(delta.new_file().id()),
+            old_blob_id,
+            new_blob_id,
         });
         self.current_file = Some(self.files.len() - 1);
         self.current_hunk = None;
@@ -1451,10 +2092,12 @@ impl DiffBuildState {
             .to_string();
         let id = line_id(&path, line.old_lineno(), line.new_lineno(), &kind, &content);
         let hunk = &mut self.files[file_idx].hunks[hunk_idx];
-        hunk.raw_patch.push(origin);
-        hunk.raw_patch.push_str(&raw);
-        if !raw.ends_with('\n') {
-            hunk.raw_patch.push('\n');
+        if !matches!(origin, '=' | '<' | '>') {
+            hunk.raw_patch.push(origin);
+            hunk.raw_patch.push_str(&raw);
+            if !raw.ends_with('\n') {
+                hunk.raw_patch.push('\n');
+            }
         }
         hunk.lines.push(GitDiffLine {
             id,
@@ -1463,6 +2106,7 @@ impl DiffBuildState {
             kind,
             prefix: origin.to_string(),
             content,
+            raw_content: raw,
             highlights: Vec::new(),
         });
     }
@@ -1897,6 +2541,84 @@ fn blob_id(oid: Oid) -> Option<Oid> {
     (oid != Oid::zero()).then_some(oid)
 }
 
+fn finalize_diff_ids(files: &mut [GitFileDiff]) {
+    for file in files {
+        let file_id = file.id.clone();
+        for hunk in &mut file.hunks {
+            hunk.id = stable_hunk_id(&file_id, hunk);
+        }
+    }
+}
+
+fn file_id(
+    old_path: Option<&str>,
+    new_path: Option<&str>,
+    change: GitChangeKind,
+    old_blob_id: Option<Oid>,
+    new_blob_id: Option<Oid>,
+) -> String {
+    let old_path_hash = stable_hash_hex(old_path.unwrap_or(""));
+    let new_path_hash = stable_hash_hex(new_path.unwrap_or(""));
+    let old_blob = old_blob_id
+        .map(|oid| oid.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let new_blob = new_blob_id
+        .map(|oid| oid.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!("file:{old_path_hash}:{new_path_hash}:{change:?}:{old_blob}:{new_blob}")
+}
+
+fn file_id_hint(file: &GitFileDiff) -> String {
+    let old_path_hash = stable_hash_hex(file.old_path.as_deref().unwrap_or(""));
+    let new_path_hash = stable_hash_hex(file.new_path.as_deref().unwrap_or(""));
+    format!("file:{old_path_hash}:{new_path_hash}:")
+}
+
+fn stable_hunk_id(file_id: &str, hunk: &GitDiffHunk) -> String {
+    let changed_lines = hunk
+        .lines
+        .iter()
+        .filter(|line| matches!(line.kind, GitLineKind::Addition | GitLineKind::Deletion))
+        .collect::<Vec<_>>();
+    let old_start = changed_lines
+        .iter()
+        .filter_map(|line| line.old_line)
+        .min()
+        .unwrap_or(hunk.old_start);
+    let old_end = changed_lines
+        .iter()
+        .filter_map(|line| line.old_line)
+        .max()
+        .unwrap_or(hunk.old_start);
+    let new_start = changed_lines
+        .iter()
+        .filter_map(|line| line.new_line)
+        .min()
+        .unwrap_or(hunk.new_start);
+    let new_end = changed_lines
+        .iter()
+        .filter_map(|line| line.new_line)
+        .max()
+        .unwrap_or(hunk.new_start);
+    let fingerprint = changed_lines
+        .iter()
+        .map(|line| {
+            format!(
+                "{}:{}:{}:{}",
+                line.prefix,
+                line.old_line.unwrap_or(0),
+                line.new_line.unwrap_or(0),
+                line.raw_content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{file_id}:hunk:{old_start}-{old_end}:{new_start}-{new_end}:{}",
+        stable_hash_hex(&fingerprint)
+    )
+}
+
 fn hunk_id(
     file: &GitFileDiff,
     hunk_idx: usize,
@@ -1929,6 +2651,15 @@ fn line_id(
 }
 
 fn file_patch_header(file: &GitFileDiff) -> String {
+    file_patch_header_for(file, ReviewPatchHeaderMode::Original)
+}
+
+fn file_patch_header_for(file: &GitFileDiff, mode: ReviewPatchHeaderMode) -> String {
+    if matches!(mode, ReviewPatchHeaderMode::ContentAtRightPath)
+        && let Some(path) = file.new_path.as_deref().or(file.old_path.as_deref())
+    {
+        return format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    }
     let old_path = file.old_path.as_deref().unwrap_or("/dev/null");
     let new_path = file.new_path.as_deref().unwrap_or("/dev/null");
     let old_display = if matches!(file.change, GitChangeKind::Added | GitChangeKind::Untracked) {
@@ -2028,39 +2759,47 @@ fn stable_hash_hex(input: &str) -> String {
 }
 
 fn reverse_patch(patch: &str) -> String {
-    let lines = patch.lines().collect::<Vec<_>>();
+    let lines = patch.split_inclusive('\n').collect::<Vec<_>>();
     let mut reversed = Vec::with_capacity(lines.len());
     let mut index = 0usize;
     while index < lines.len() {
         let line = lines[index];
+        let (body, line_ending) = split_line_ending(line);
         if let Some(rest) = line.strip_prefix("diff --git ") {
             let parts = rest.split_whitespace().collect::<Vec<_>>();
             if parts.len() == 2 {
-                reversed.push(format!("diff --git {} {}", parts[1], parts[0]));
+                reversed.push(format!("diff --git {} {}{line_ending}", parts[1], parts[0]));
                 index += 1;
                 continue;
             }
         }
-        if let (Some(old_path), Some(next)) = (line.strip_prefix("--- "), lines.get(index + 1))
-            && let Some(new_path) = next.strip_prefix("+++ ")
+        if let (Some(old_path), Some(next)) = (body.strip_prefix("--- "), lines.get(index + 1))
+            && let (next_body, next_ending) = split_line_ending(next)
+            && let Some(new_path) = next_body.strip_prefix("+++ ")
         {
-            reversed.push(format!("--- {new_path}"));
-            reversed.push(format!("+++ {old_path}"));
+            reversed.push(format!("--- {new_path}{line_ending}"));
+            reversed.push(format!("+++ {old_path}{next_ending}"));
             index += 2;
             continue;
         }
-        if let Some(header) = reverse_hunk_header(line) {
-            reversed.push(header);
-        } else if let Some(rest) = line.strip_prefix('+') {
-            reversed.push(format!("-{rest}"));
-        } else if let Some(rest) = line.strip_prefix('-') {
-            reversed.push(format!("+{rest}"));
+        if let Some(header) = reverse_hunk_header(body) {
+            reversed.push(format!("{header}{line_ending}"));
+        } else if let Some(rest) = body.strip_prefix('+') {
+            reversed.push(format!("-{rest}{line_ending}"));
+        } else if let Some(rest) = body.strip_prefix('-') {
+            reversed.push(format!("+{rest}{line_ending}"));
         } else {
             reversed.push(line.to_string());
         }
         index += 1;
     }
-    reversed.join("\n") + "\n"
+    reversed.concat()
+}
+
+fn split_line_ending(line: &str) -> (&str, &str) {
+    line.strip_suffix('\n')
+        .map(|body| (body, "\n"))
+        .unwrap_or((line, ""))
 }
 
 fn reverse_hunk_header(line: &str) -> Option<String> {
