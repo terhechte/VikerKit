@@ -94,7 +94,7 @@ public struct VikerEditorSlashCommandRequest {
 
 public typealias VikerEditorSlashCommandProvider = @MainActor (VikerEditorSlashCommandRequest) -> [VikerEditorSlashCommand]
 
-struct EditorAutosuggestionViewItem {
+struct EditorAutosuggestionViewItem: Equatable {
     let id: String
     let title: String
     let subtitle: String?
@@ -158,8 +158,11 @@ final class VikerEditorAutosuggestionView: NSView {
         query: String,
         status: String?,
         items: [EditorAutosuggestionViewItem],
-        selectedIndex: Int
+        selectedIndex: Int,
+        scrollSelectionIntoView: Bool = true
     ) {
+        let previousItems = self.items
+        let previousSelectedIndex = self.selectedIndex
         self.items = items
         self.selectedIndex = clamped(selectedIndex, lowerBound: 0, upperBound: max(items.count - 1, 0))
 
@@ -170,11 +173,14 @@ final class VikerEditorAutosuggestionView: NSView {
         statusLabel.isHidden = !items.isEmpty && status == nil
         scrollView.isHidden = items.isEmpty
 
-        rebuildRows()
+        updateRows(itemsChanged: previousItems != items, previousSelectedIndex: previousSelectedIndex)
         setFrameSize(preferredSize)
         needsLayout = true
         needsDisplay = true
-        scrollSelectedRowToVisible()
+        if scrollSelectionIntoView {
+            scrollSelectedRowToVisible()
+        }
+        pinHorizontalScroll()
     }
 
     func applyTheme(colorScheme: VikerEditorColorScheme) {
@@ -259,6 +265,27 @@ final class VikerEditorAutosuggestionView: NSView {
         ])
     }
 
+    private func updateRows(itemsChanged: Bool, previousSelectedIndex: Int) {
+        guard rowViews.count == items.count else {
+            rebuildRows()
+            return
+        }
+
+        if !itemsChanged {
+            if rowViews.indices.contains(previousSelectedIndex) {
+                rowViews[previousSelectedIndex].setSelected(false)
+            }
+            if rowViews.indices.contains(selectedIndex) {
+                rowViews[selectedIndex].setSelected(true)
+            }
+            return
+        }
+
+        for (index, item) in items.enumerated() {
+            rowViews[index].configure(item: item, selected: index == selectedIndex)
+        }
+    }
+
     private func rebuildRows() {
         for rowView in rowViews {
             stackView.removeArrangedSubview(rowView)
@@ -280,7 +307,15 @@ final class VikerEditorAutosuggestionView: NSView {
 
     private func scrollSelectedRowToVisible() {
         guard rowViews.indices.contains(selectedIndex) else { return }
-        rowViews[selectedIndex].scrollToVisible(rowViews[selectedIndex].bounds)
+        let selectedFrame = rowViews[selectedIndex].frame
+        documentView.scrollToVisible(NSRect(x: 0, y: selectedFrame.minY, width: 1, height: selectedFrame.height))
+        pinHorizontalScroll()
+    }
+
+    private func pinHorizontalScroll() {
+        guard scrollView.contentView.bounds.origin.x != 0 else { return }
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: scrollView.contentView.bounds.origin.y))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     private func clamped(_ value: Int, lowerBound: Int, upperBound: Int) -> Int {
@@ -345,6 +380,12 @@ private final class VikerEditorAutosuggestionRowView: NSView {
         applyTheme(colorScheme: colorScheme)
     }
 
+    func setSelected(_ selected: Bool) {
+        guard self.selected != selected else { return }
+        self.selected = selected
+        applyTheme(colorScheme: colorScheme)
+    }
+
     func applyTheme(colorScheme: VikerEditorColorScheme) {
         self.colorScheme = colorScheme
         wantsLayer = true
@@ -394,26 +435,31 @@ private final class VikerEditorAutosuggestionRowView: NSView {
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.alignment = .left
         subtitleLabel.lineBreakMode = .byTruncatingMiddle
+        subtitleLabel.alignment = .left
         detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.alignment = .left
         badgeLabel.alignment = .right
 
-        let titleStack = NSStackView(views: [titleLabel, subtitleLabel])
-        titleStack.orientation = .horizontal
-        titleStack.spacing = 6
-        titleStack.alignment = .firstBaseline
-        titleStack.distribution = .fill
-        titleStack.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.maximumNumberOfLines = 1
+        subtitleLabel.maximumNumberOfLines = 1
+        detailLabel.maximumNumberOfLines = 1
+        badgeLabel.maximumNumberOfLines = 1
 
-        let textStack = NSStackView(views: [titleStack, detailLabel])
-        textStack.orientation = .vertical
-        textStack.spacing = 1
-        textStack.alignment = .leading
-        textStack.distribution = .fill
-        textStack.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.setContentCompressionResistancePriority(.init(760), for: .horizontal)
+        titleLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        subtitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        badgeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        badgeLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         addSubview(iconView)
-        addSubview(textStack)
+        addSubview(titleLabel)
+        addSubview(subtitleLabel)
+        addSubview(detailLabel)
         addSubview(badgeLabel)
 
         NSLayoutConstraint.activate([
@@ -422,13 +468,21 @@ private final class VikerEditorAutosuggestionRowView: NSView {
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
 
-            textStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 9),
-            textStack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            textStack.trailingAnchor.constraint(lessThanOrEqualTo: badgeLabel.leadingAnchor, constant: -10),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 9),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: subtitleLabel.leadingAnchor, constant: -6),
+
+            subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
+            subtitleLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
+            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: badgeLabel.leadingAnchor, constant: -10),
+
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: badgeLabel.leadingAnchor, constant: -10),
 
             badgeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             badgeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badgeLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 90),
+            badgeLabel.widthAnchor.constraint(equalToConstant: 90),
         ])
     }
 }

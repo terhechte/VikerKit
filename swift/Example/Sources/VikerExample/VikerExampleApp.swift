@@ -48,9 +48,10 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
         do {
             let configuration = VikerEditorConfiguration(
                 loadsLSPs: true,
-                initialMode: .normal,
+                initialMode: .insert,
                 showsLineNumbers: true,
-                autosaves: false
+                autosaves: false,
+                enablesSlashCommandSuggestions: true
             )
             let editor = try VikerEditorComponent(url: standardizedURL, configuration: configuration)
             editor.onTitleChange = { [weak self] title in
@@ -65,6 +66,7 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
             editor.onFileURLChange = { [weak self] url in
                 self?.window?.title = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
             }
+            installExampleSlashCommands(on: editor)
 
             window.contentView = editor.view
             window.title = editor.title
@@ -83,6 +85,141 @@ final class VikerExampleAppDelegate: NSObject, NSApplicationDelegate, NSWindowDe
             window.title = errorContent.title
             self.errorContent = errorContent
             window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func installExampleSlashCommands(on editor: VikerEditorComponent) {
+        let staticCommands = [
+            VikerEditorSlashCommand(
+                id: "summarize-selection",
+                title: "Summarize Selection",
+                subtitle: "Draft a concise summary prompt",
+                detail: "summary prompt",
+                category: "Commands",
+                systemImageName: "text.alignleft",
+                insertText: "/summarize "
+            ),
+            VikerEditorSlashCommand(
+                id: "explain-code",
+                title: "Explain Code",
+                subtitle: "Ask for a step-by-step explanation",
+                detail: "explain implementation behavior",
+                category: "Commands",
+                systemImageName: "questionmark.circle",
+                insertText: "/explain "
+            ),
+            VikerEditorSlashCommand(
+                id: "fix-bug",
+                title: "Fix Bug",
+                subtitle: "Describe a failing behavior to repair",
+                detail: "debug repair failing code",
+                category: "Commands",
+                systemImageName: "wrench.and.screwdriver",
+                insertText: "/fix "
+            ),
+            VikerEditorSlashCommand(
+                id: "generate-tests",
+                title: "Generate Tests",
+                subtitle: "Request focused test coverage",
+                detail: "unit tests integration tests coverage",
+                category: "Commands",
+                systemImageName: "checklist",
+                insertText: "/tests "
+            ),
+            VikerEditorSlashCommand(
+                id: "draft-commit",
+                title: "Draft Commit Message",
+                subtitle: "Turn the change into a concise commit message",
+                detail: "git commit message",
+                category: "Commands",
+                systemImageName: "text.badge.checkmark",
+                insertText: "/commit-message "
+            ),
+            VikerEditorSlashCommand(
+                id: "skill-code-review",
+                title: "Code Review",
+                subtitle: "Use a review skill on the current code",
+                detail: "skill review bugs risks tests",
+                category: "Skills",
+                systemImageName: "checkmark.seal",
+                insertText: "/skill code-review "
+            ),
+            VikerEditorSlashCommand(
+                id: "skill-swift-polish",
+                title: "Swift UI Polish",
+                subtitle: "Use a Swift/AppKit polish skill",
+                detail: "skill swift appkit ui polish",
+                category: "Skills",
+                systemImageName: "sparkles",
+                insertText: "/skill swift-polish "
+            ),
+            VikerEditorSlashCommand(
+                id: "skill-release-notes",
+                title: "Release Notes",
+                subtitle: "Summarize changes for a release",
+                detail: "skill release changelog notes",
+                category: "Skills",
+                systemImageName: "doc.text",
+                insertText: "/skill release-notes "
+            )
+        ]
+
+        for command in staticCommands {
+            editor.registerSlashCommand(command)
+        }
+
+        editor.slashCommandProvider = { request in
+            let fileName = request.currentFileURL?.lastPathComponent ?? "Untitled"
+            let projectName = request.workspaceRootURL?.lastPathComponent ?? "Current Project"
+            let timestamp = DateFormatter.localizedString(
+                from: Date(),
+                dateStyle: .medium,
+                timeStyle: .short
+            )
+            let dynamicCommands = [
+                VikerEditorSlashCommand(
+                    id: "dynamic-current-file",
+                    title: "Current File",
+                    subtitle: fileName,
+                    detail: "dynamic file context mention",
+                    category: "Dynamic",
+                    systemImageName: "doc.text.magnifyingglass",
+                    insertText: "/file \(fileName) "
+                ),
+                VikerEditorSlashCommand(
+                    id: "dynamic-project-context",
+                    title: "Project Context",
+                    subtitle: projectName,
+                    detail: "dynamic workspace project context",
+                    category: "Dynamic",
+                    systemImageName: "folder",
+                    insertText: "/project \(projectName) "
+                ),
+                VikerEditorSlashCommand(
+                    id: "dynamic-timestamp",
+                    title: "Insert Timestamp",
+                    subtitle: timestamp,
+                    detail: "dynamic date time now",
+                    category: "Dynamic",
+                    systemImageName: "calendar",
+                    insertText: "/timestamp \(timestamp) "
+                )
+            ]
+
+            let query = request.query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !query.isEmpty else { return dynamicCommands }
+
+            return dynamicCommands.filter { command in
+                [
+                    command.title,
+                    command.subtitle,
+                    command.detail,
+                    command.category
+                ]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                    .localizedCaseInsensitiveContains(query)
+            }
         }
     }
 

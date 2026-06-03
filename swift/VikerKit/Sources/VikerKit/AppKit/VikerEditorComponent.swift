@@ -2502,7 +2502,7 @@ public final class VikerEditorComponent: NSObject {
               session.items.indices.contains(index) else { return }
         session.selectedIndex = index
         autosuggestionSession = session
-        updateAutosuggestionView()
+        updateAutosuggestionView(scrollSelectionIntoView: false)
     }
 
     private func moveAutosuggestionSelection(delta: Int) {
@@ -2573,7 +2573,7 @@ public final class VikerEditorComponent: NSObject {
         autosuggestionView.isHidden = true
     }
 
-    private func updateAutosuggestionView() {
+    private func updateAutosuggestionView(scrollSelectionIntoView: Bool = true) {
         guard let session = autosuggestionSession else {
             autosuggestionView.isHidden = true
             return
@@ -2585,7 +2585,8 @@ public final class VikerEditorComponent: NSObject {
             query: session.displayQuery,
             status: session.status,
             items: session.items.map(\.viewItem),
-            selectedIndex: session.selectedIndex
+            selectedIndex: session.selectedIndex,
+            scrollSelectionIntoView: scrollSelectionIntoView
         )
         positionAutosuggestionView()
     }

@@ -53,4 +53,6 @@ or declare additional Swift package dependencies.
 
 The editor view is configured with `VikerEditorConfiguration`, which controls
 the color scheme, status bar, top toolbar items, LSP startup, initial editor
-mode, insert-only mode, and line-number gutter.
+mode, insert-only mode, and line-number gutter. The example starts in insert
+mode and enables `/` slash-command autosuggestions with sample Commands,
+Skills, and Dynamic entries.
