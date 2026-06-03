@@ -35,6 +35,7 @@ public struct VikerEditorConfiguration {
     public var workspaceRootURL: URL?
     public var enablesAutosuggestions: Bool
     public var enablesMentionSuggestions: Bool
+    public var enablesSlashCommandSuggestions: Bool
 
     public init(
         colorScheme: VikerEditorColorScheme = .dark,
@@ -49,7 +50,8 @@ public struct VikerEditorConfiguration {
         forcedSyntaxLanguage: VikerSyntaxLanguage? = nil,
         workspaceRootURL: URL? = nil,
         enablesAutosuggestions: Bool = true,
-        enablesMentionSuggestions: Bool = true
+        enablesMentionSuggestions: Bool = true,
+        enablesSlashCommandSuggestions: Bool = false
     ) {
         self.colorScheme = colorScheme
         self.showsStatusBar = showsStatusBar
@@ -64,6 +66,7 @@ public struct VikerEditorConfiguration {
         self.workspaceRootURL = workspaceRootURL?.standardizedFileURL
         self.enablesAutosuggestions = enablesAutosuggestions
         self.enablesMentionSuggestions = enablesMentionSuggestions
+        self.enablesSlashCommandSuggestions = enablesSlashCommandSuggestions
     }
 }
 
@@ -113,6 +116,7 @@ public final class VikerEditorComponent: NSObject {
     private var editorErrors: [EditorErrorSource: String] = [:]
     private var autosuggestionSession: EditorAutosuggestionSession?
     private var registeredContextSuggestions: [VikerEditorContextSuggestion] = []
+    private var registeredSlashCommands: [VikerEditorSlashCommand] = []
     private var cachedProjectFilesRootURL: URL?
     private var cachedProjectFiles: [String]?
     private var mouseSelectionAnchor: EditorMouseCell?
@@ -145,6 +149,12 @@ public final class VikerEditorComponent: NSObject {
         }
     }
     public var onContextSuggestionSelected: ((VikerEditorContextSuggestion) -> Void)?
+    public var slashCommandProvider: VikerEditorSlashCommandProvider? {
+        didSet {
+            refreshSlashCommandSuggestionsIfNeeded()
+        }
+    }
+    public var onSlashCommandSelected: ((VikerEditorSlashCommand) -> Void)?
     public var currentDocumentURL: URL? { currentFileURL }
     public var vikerEditor: VikerEditor { editor }
 
@@ -222,6 +232,22 @@ public final class VikerEditorComponent: NSObject {
         refreshMentionSuggestionsIfNeeded()
     }
 
+    public func registerSlashCommand(_ command: VikerEditorSlashCommand) {
+        registeredSlashCommands.removeAll { $0.id == command.id }
+        registeredSlashCommands.append(command)
+        refreshSlashCommandSuggestionsIfNeeded()
+    }
+
+    public func unregisterSlashCommand(id: String) {
+        registeredSlashCommands.removeAll { $0.id == id }
+        refreshSlashCommandSuggestionsIfNeeded()
+    }
+
+    public func removeAllSlashCommands() {
+        registeredSlashCommands.removeAll()
+        refreshSlashCommandSuggestionsIfNeeded()
+    }
+
     public func makeFirstResponder() {
         editorView.window?.makeFirstResponder(editorView)
     }
@@ -283,6 +309,7 @@ public final class VikerEditorComponent: NSObject {
         cachedProjectFilesRootURL = nil
         cachedProjectFiles = nil
         updatePathLabel()
+        refreshSlashCommandSuggestionsIfNeeded()
         refreshMentionSuggestionsIfNeeded()
     }
 
@@ -2042,11 +2069,15 @@ public final class VikerEditorComponent: NSObject {
             return
         }
 
+        if refreshSlashCommandSuggestionsIfNeeded() {
+            return
+        }
+
         if refreshMentionSuggestionsIfNeeded() {
             return
         }
 
-        if autosuggestionSession?.mode == .mention {
+        if autosuggestionSession?.mode == .mention || autosuggestionSession?.mode == .slashCommand {
             dismissAutosuggestions()
             return
         }
@@ -2066,6 +2097,10 @@ public final class VikerEditorComponent: NSObject {
     private func refreshAutosuggestionsAfterTextMutation() {
         guard configuration.enablesAutosuggestions else {
             dismissAutosuggestions()
+            return
+        }
+
+        if refreshSlashCommandSuggestionsIfNeeded() {
             return
         }
 
@@ -2094,11 +2129,28 @@ public final class VikerEditorComponent: NSObject {
         return true
     }
 
+    @discardableResult
+    private func refreshSlashCommandSuggestionsIfNeeded() -> Bool {
+        guard configuration.enablesAutosuggestions,
+              configuration.enablesSlashCommandSuggestions,
+              Self.isTextSelectionMode(snapshot.mode),
+              let token = currentSlashCommandToken() else {
+            if autosuggestionSession?.mode == .slashCommand {
+                dismissAutosuggestions()
+            }
+            return false
+        }
+
+        presentSlashCommandSuggestions(query: token.query, replacementRange: token.range)
+        return true
+    }
+
     private func shouldRequestLspCompletion(after event: NSEvent, keyEvent: VikerKeyEvent) -> Bool {
         guard configuration.enablesAutosuggestions,
               lspSession != nil,
               isLspRunning,
               Self.isTextSelectionMode(snapshot.mode),
+              currentSlashCommandToken() == nil,
               currentMentionToken() == nil else {
             return false
         }
@@ -2165,6 +2217,7 @@ public final class VikerEditorComponent: NSObject {
     ) {
         guard completionRequestGeneration == generation,
               Self.isTextSelectionMode(snapshot.mode),
+              currentSlashCommandToken() == nil,
               currentMentionToken() == nil else {
             return
         }
@@ -2205,6 +2258,7 @@ public final class VikerEditorComponent: NSObject {
     private func presentLspCompletions(_ completions: [VikerCompletionItem]) {
         guard configuration.enablesAutosuggestions,
               Self.isTextSelectionMode(snapshot.mode),
+              currentSlashCommandToken() == nil,
               currentMentionToken() == nil else {
             dismissAutosuggestions()
             return
@@ -2227,6 +2281,7 @@ public final class VikerEditorComponent: NSObject {
                     systemImageName: Self.completionKindImageName(completion.kind),
                     replacementText: Self.plainTextFromSnippet(completion.insertText ?? completion.label),
                     contextSuggestion: nil,
+                    slashCommand: nil,
                     action: nil
                 )
             }
@@ -2266,6 +2321,28 @@ public final class VikerEditorComponent: NSObject {
             items: items,
             selectedIndex: min(autosuggestionSession?.selectedIndex ?? 0, max(items.count - 1, 0)),
             status: items.isEmpty ? "No context matches" : nil
+        )
+        updateAutosuggestionView()
+    }
+
+    private func presentSlashCommandSuggestions(query: String, replacementRange: Range<Int>) {
+        let effectiveWorkspaceRootURL = workspaceRootURL ?? currentFileURL?.deletingLastPathComponent().standardizedFileURL
+        let request = VikerEditorSlashCommandRequest(
+            query: query,
+            currentFileURL: currentFileURL,
+            workspaceRootURL: effectiveWorkspaceRootURL
+        )
+        let registeredItems = filteredRegisteredSlashCommands(query: query).map { Self.autosuggestionItem(from: $0) }
+        let providedItems = (slashCommandProvider?(request) ?? []).map { Self.autosuggestionItem(from: $0) }
+        let items = Array((registeredItems + providedItems).prefix(80))
+
+        autosuggestionSession = EditorAutosuggestionSession(
+            mode: .slashCommand,
+            query: query,
+            replacementRange: replacementRange,
+            items: items,
+            selectedIndex: min(autosuggestionSession?.selectedIndex ?? 0, max(items.count - 1, 0)),
+            status: items.isEmpty ? "No commands match" : nil
         )
         updateAutosuggestionView()
     }
@@ -2318,6 +2395,31 @@ public final class VikerEditorComponent: NSObject {
                 .joined(separator: " ")
                 guard let score = Self.fuzzyScore(searchable, query: trimmedQuery) else { return nil }
                 return (suggestion, score)
+            }
+            .sorted { lhs, rhs in
+                lhs.1 == rhs.1
+                    ? lhs.0.title.localizedCaseInsensitiveCompare(rhs.0.title) == .orderedAscending
+                    : lhs.1 > rhs.1
+            }
+            .map(\.0)
+    }
+
+    private func filteredRegisteredSlashCommands(query: String) -> [VikerEditorSlashCommand] {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return registeredSlashCommands }
+
+        return registeredSlashCommands
+            .compactMap { command -> (VikerEditorSlashCommand, Int)? in
+                let searchable = [
+                    command.title,
+                    command.subtitle,
+                    command.detail,
+                    command.category,
+                ]
+                .compactMap { $0 }
+                .joined(separator: " ")
+                guard let score = Self.fuzzyScore(searchable, query: trimmedQuery) else { return nil }
+                return (command, score)
             }
             .sorted { lhs, rhs in
                 lhs.1 == rhs.1
@@ -2422,7 +2524,7 @@ public final class VikerEditorComponent: NSObject {
             let historyBefore = try currentTextHistorySnapshot()
             let replacementRange = currentReplacementRange(for: session) ?? session.replacementRange
             let replacementText = item.replacementText
-                ?? (item.action != nil || item.contextSuggestion?.action != nil ? "" : nil)
+                ?? (item.action != nil || item.contextSuggestion?.action != nil || item.slashCommand?.action != nil ? "" : nil)
 
             if let replacementText {
                 _ = try replaceText(
@@ -2441,6 +2543,9 @@ public final class VikerEditorComponent: NSObject {
             if let contextSuggestion = item.contextSuggestion {
                 contextSuggestion.action?()
                 onContextSuggestionSelected?(contextSuggestion)
+            } else if let slashCommand = item.slashCommand {
+                slashCommand.action?()
+                onSlashCommandSelected?(slashCommand)
             } else {
                 item.action?()
             }
@@ -2456,6 +2561,8 @@ public final class VikerEditorComponent: NSObject {
             return currentCompletionPrefix().range
         case .mention:
             return currentMentionToken()?.range
+        case .slashCommand:
+            return currentSlashCommandToken()?.range
         }
     }
 
@@ -2475,7 +2582,7 @@ public final class VikerEditorComponent: NSObject {
         autosuggestionView.isHidden = false
         autosuggestionView.update(
             title: session.mode.title,
-            query: session.mode == .mention ? "@\(session.query)" : session.query,
+            query: session.displayQuery,
             status: session.status,
             items: session.items.map(\.viewItem),
             selectedIndex: session.selectedIndex
@@ -2545,6 +2652,30 @@ public final class VikerEditorComponent: NSObject {
         let queryStart = min(atIndex + 1, cursorOffset)
         let query = Self.stringBySelectingUnicodeScalars(in: text, range: queryStart..<cursorOffset)
         return (atIndex..<cursorOffset, query)
+    }
+
+    private func currentSlashCommandToken() -> (range: Range<Int>, query: String)? {
+        let text = snapshot.text
+        let cursorOffset = Self.scalarOffset(for: snapshot.cursor, in: text)
+        let scalars = Array(text.unicodeScalars)
+        guard cursorOffset > 0, cursorOffset <= scalars.count else { return nil }
+
+        var segmentStart = cursorOffset
+        while segmentStart > 0 {
+            let scalar = scalars[segmentStart - 1]
+            if scalar == "\n" || CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                break
+            }
+            segmentStart -= 1
+        }
+
+        guard segmentStart < cursorOffset, scalars[segmentStart] == "/" else {
+            return nil
+        }
+
+        let queryStart = min(segmentStart + 1, cursorOffset)
+        let query = Self.stringBySelectingUnicodeScalars(in: text, range: queryStart..<cursorOffset)
+        return (segmentStart..<cursorOffset, query)
     }
 
     private func currentCompletionPrefix() -> (range: Range<Int>, query: String) {
@@ -3114,7 +3245,23 @@ public final class VikerEditorComponent: NSObject {
             systemImageName: suggestion.systemImageName,
             replacementText: suggestion.insertText,
             contextSuggestion: suggestion,
+            slashCommand: nil,
             action: suggestion.action
+        )
+    }
+
+    private static func autosuggestionItem(from command: VikerEditorSlashCommand) -> EditorAutosuggestionItem {
+        EditorAutosuggestionItem(
+            id: command.id,
+            title: command.title,
+            subtitle: command.subtitle,
+            detail: command.detail,
+            badge: command.category,
+            systemImageName: command.systemImageName,
+            replacementText: command.insertText,
+            contextSuggestion: nil,
+            slashCommand: command,
+            action: command.action
         )
     }
 
@@ -3587,6 +3734,7 @@ private struct EditorTransientSelectionDrag {
 private enum EditorAutosuggestionMode {
     case lsp
     case mention
+    case slashCommand
 
     var title: String {
         switch self {
@@ -3594,6 +3742,8 @@ private enum EditorAutosuggestionMode {
             return "Code Suggestions"
         case .mention:
             return "Add Context"
+        case .slashCommand:
+            return "Slash Commands"
         }
     }
 }
@@ -3607,6 +3757,7 @@ private struct EditorAutosuggestionItem {
     let systemImageName: String?
     let replacementText: String?
     let contextSuggestion: VikerEditorContextSuggestion?
+    let slashCommand: VikerEditorSlashCommand?
     let action: (() -> Void)?
 
     var viewItem: EditorAutosuggestionViewItem {
@@ -3633,6 +3784,17 @@ private struct EditorAutosuggestionSession {
     var selectedItem: EditorAutosuggestionItem? {
         guard items.indices.contains(selectedIndex) else { return nil }
         return items[selectedIndex]
+    }
+
+    var displayQuery: String {
+        switch mode {
+        case .lsp:
+            return query
+        case .mention:
+            return "@\(query)"
+        case .slashCommand:
+            return "/\(query)"
+        }
     }
 }
 

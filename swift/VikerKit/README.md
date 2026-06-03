@@ -57,8 +57,10 @@ component.makeFirstResponder()
   normal mode.
 - `showsLineNumbers`: show or hide the gutter line numbers.
 - `enablesAutosuggestions`: show inline AppKit autosuggestions for LSP
-  completion and `@` context mentions.
+  completion, `@` context mentions, and enabled slash commands.
 - `enablesMentionSuggestions`: enable the `@` context picker.
+- `enablesSlashCommandSuggestions`: enable the `/` command picker. This is
+  disabled by default so insert-mode `/` keeps its existing plain text behavior.
 
 The autosuggestion popup supports arrow-key navigation, `Ctrl-N` / `Ctrl-P`,
 `Return` or `Tab` to accept, and `Esc` to dismiss. LSP completions are requested
@@ -93,6 +95,43 @@ component.contextSuggestionProvider = { request in
             )
         }
 }
+```
+
+Slash command suggestions use the same popup, but only appear when
+`enablesSlashCommandSuggestions` is true. Consuming apps provide the command and
+skill entries through `registerSlashCommand(_:)` or the dynamic
+`slashCommandProvider`:
+
+```swift
+let component = try VikerEditorComponent(
+    url: fileURL,
+    configuration: VikerEditorConfiguration(
+        initialMode: .insert,
+        enablesSlashCommandSuggestions: true
+    )
+)
+
+component.registerSlashCommand(
+    VikerEditorSlashCommand(
+        id: "summarize",
+        title: "Summarize",
+        subtitle: "Create a concise summary",
+        category: "Commands",
+        systemImageName: "text.alignleft",
+        action: { summarizeSelection() }
+    )
+)
+
+component.registerSlashCommand(
+    VikerEditorSlashCommand(
+        id: "skill-review",
+        title: "Code Review",
+        subtitle: "Use the review skill",
+        category: "Skills",
+        systemImageName: "checkmark.seal",
+        insertText: "/review "
+    )
+)
 ```
 
 The component exposes callbacks for file navigation and title changes:

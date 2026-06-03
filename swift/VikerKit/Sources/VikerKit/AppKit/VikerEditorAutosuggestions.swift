@@ -49,6 +49,51 @@ public struct VikerEditorContextSuggestionRequest {
 
 public typealias VikerEditorContextSuggestionProvider = @MainActor (VikerEditorContextSuggestionRequest) -> [VikerEditorContextSuggestion]
 
+public struct VikerEditorSlashCommand {
+    public var id: String
+    public var title: String
+    public var subtitle: String?
+    public var detail: String?
+    public var category: String
+    public var systemImageName: String?
+    public var insertText: String?
+    public var action: (() -> Void)?
+
+    public init(
+        id: String,
+        title: String,
+        subtitle: String? = nil,
+        detail: String? = nil,
+        category: String = "Commands",
+        systemImageName: String? = nil,
+        insertText: String? = nil,
+        action: (() -> Void)? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.detail = detail
+        self.category = category
+        self.systemImageName = systemImageName
+        self.insertText = insertText
+        self.action = action
+    }
+}
+
+public struct VikerEditorSlashCommandRequest {
+    public let query: String
+    public let currentFileURL: URL?
+    public let workspaceRootURL: URL?
+
+    public init(query: String, currentFileURL: URL?, workspaceRootURL: URL?) {
+        self.query = query
+        self.currentFileURL = currentFileURL
+        self.workspaceRootURL = workspaceRootURL?.standardizedFileURL
+    }
+}
+
+public typealias VikerEditorSlashCommandProvider = @MainActor (VikerEditorSlashCommandRequest) -> [VikerEditorSlashCommand]
+
 struct EditorAutosuggestionViewItem {
     let id: String
     let title: String
