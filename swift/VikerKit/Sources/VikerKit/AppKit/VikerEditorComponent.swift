@@ -21,6 +21,11 @@ public enum VikerEditorInitialMode {
     case insert
 }
 
+public enum VikerEditorSizingBehavior {
+    case fillsAvailableSpace
+    case contentHeight(minVisibleLines: Int = 4, maxVisibleLines: Int? = nil)
+}
+
 public struct VikerEditorConfiguration {
     public var colorScheme: VikerEditorColorScheme
     public var showsStatusBar: Bool
@@ -36,6 +41,7 @@ public struct VikerEditorConfiguration {
     public var enablesAutosuggestions: Bool
     public var enablesMentionSuggestions: Bool
     public var enablesSlashCommandSuggestions: Bool
+    public var sizingBehavior: VikerEditorSizingBehavior
 
     public init(
         colorScheme: VikerEditorColorScheme = .dark,
@@ -51,7 +57,8 @@ public struct VikerEditorConfiguration {
         workspaceRootURL: URL? = nil,
         enablesAutosuggestions: Bool = true,
         enablesMentionSuggestions: Bool = true,
-        enablesSlashCommandSuggestions: Bool = false
+        enablesSlashCommandSuggestions: Bool = false,
+        sizingBehavior: VikerEditorSizingBehavior = .fillsAvailableSpace
     ) {
         self.colorScheme = colorScheme
         self.showsStatusBar = showsStatusBar
@@ -67,6 +74,7 @@ public struct VikerEditorConfiguration {
         self.enablesAutosuggestions = enablesAutosuggestions
         self.enablesMentionSuggestions = enablesMentionSuggestions
         self.enablesSlashCommandSuggestions = enablesSlashCommandSuggestions
+        self.sizingBehavior = sizingBehavior
     }
 }
 
@@ -77,10 +85,19 @@ fileprivate enum VikerNativeScrollTarget {
 }
 
 @MainActor
+private final class VikerEditorContainerView: NSView {
+    var intrinsicContentSizeProvider: (() -> NSSize)?
+
+    override var intrinsicContentSize: NSSize {
+        intrinsicContentSizeProvider?() ?? super.intrinsicContentSize
+    }
+}
+
+@MainActor
 public final class VikerEditorComponent: NSObject {
     private static let maximumTextHistoryEntries = 200
 
-    private let containerView = NSView()
+    private let containerView = VikerEditorContainerView()
     private let toolbar = VikerEditorToolbarView()
     private let saveButton = NSButton()
     private let symbolsButton = NSButton()
@@ -336,6 +353,11 @@ public final class VikerEditorComponent: NSObject {
     private func setupViews() {
         containerView.autoresizingMask = [.width, .height]
         containerView.wantsLayer = true
+        containerView.intrinsicContentSizeProvider = { [weak self] in
+            self?.intrinsicContentSizeForCurrentSizingBehavior()
+                ?? NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+        configureContainerSizingPriorities()
 
         saveButton.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: "Save")
         saveButton.imagePosition = .imageOnly
@@ -492,6 +514,48 @@ public final class VikerEditorComponent: NSObject {
         wireAutosuggestionView()
         installThemeObserver()
         applyTheme(refreshSnapshot: false)
+    }
+
+    private func configureContainerSizingPriorities() {
+        switch configuration.sizingBehavior {
+        case .fillsAvailableSpace:
+            containerView.setContentHuggingPriority(.defaultLow, for: .vertical)
+            containerView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        case .contentHeight:
+            containerView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+            containerView.setContentCompressionResistancePriority(.defaultHigh, for: .vertical)
+        }
+        containerView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        containerView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    private func intrinsicContentSizeForCurrentSizingBehavior() -> NSSize {
+        switch configuration.sizingBehavior {
+        case .fillsAvailableSpace:
+            return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        case let .contentHeight(minVisibleLines, maxVisibleLines):
+            let minLines = max(minVisibleLines, 1)
+            let maxLines = maxVisibleLines.map { max($0, minLines) }
+            let contentLines = max(editorView.renderedRowCount, minLines)
+            let visibleLines = maxLines.map { min(contentLines, $0) } ?? contentLines
+            let editorHeight = editorView.heightForVisibleLineCount(visibleLines)
+            return NSSize(
+                width: NSView.noIntrinsicMetric,
+                height: ceil(editorHeight + visibleChromeHeight)
+            )
+        }
+    }
+
+    private var visibleChromeHeight: CGFloat {
+        let toolbarHeight = showsToolbar ? VikerEditorDesign.Size.toolbarHeight : 0
+        let commandHeight: CGFloat = commandLineView.isHidden ? 0 : 26
+        let errorHeight: CGFloat = errorBar.isHidden ? 0 : 30
+        return toolbarHeight + commandHeight + errorHeight
+    }
+
+    private func invalidateIntrinsicEditorSize() {
+        containerView.invalidateIntrinsicContentSize()
+        containerView.superview?.needsLayout = true
     }
 
     private func wireAutosuggestionView() {
@@ -1709,6 +1773,7 @@ public final class VikerEditorComponent: NSObject {
         updateLspButtons()
         updateStatusLabel()
         positionAutosuggestionView()
+        invalidateIntrinsicEditorSize()
     }
 
     private func applyEffects(_ effects: [VikerEffect]) {
@@ -1969,6 +2034,7 @@ public final class VikerEditorComponent: NSObject {
 
     private func updateFooterVisibility() {
         footerStack.isHidden = commandLineView.isHidden && errorBar.isHidden
+        invalidateIntrinsicEditorSize()
     }
 
     @objc private func copyEditorError() {
@@ -3918,6 +3984,14 @@ private final class VikerEditorCanvasView: NSView {
         let width = max(Int(floor(textWidth / charWidth)), 1)
         let height = max(Int(floor(textHeight / lineHeight)), 1)
         return (UInt64(width), UInt64(height))
+    }
+
+    var renderedRowCount: Int {
+        renderState.rowCount
+    }
+
+    func heightForVisibleLineCount(_ lineCount: Int) -> CGFloat {
+        verticalInset * 2 + CGFloat(max(lineCount, 1)) * lineHeight
     }
 
     func cursorRectInDocument() -> NSRect? {

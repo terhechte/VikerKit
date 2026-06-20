@@ -61,6 +61,90 @@ component.makeFirstResponder()
 - `enablesMentionSuggestions`: enable the `@` context picker.
 - `enablesSlashCommandSuggestions`: enable the `/` command picker. This is
   disabled by default so insert-mode `/` keeps its existing plain text behavior.
+- `sizingBehavior`: use `.fillsAvailableSpace` for full-window editors or
+  `.contentHeight(minVisibleLines:maxVisibleLines:)` for composer-style editors
+  that grow with content until they should scroll.
+
+### Composer-Style Sizing
+
+`VikerEditorComponent.view` can publish an intrinsic height when configured with
+`.contentHeight`. This is useful for prompt fields, comments, chat composers, or
+other compact embeddings where the editor should start at a minimum number of
+lines, grow as the user types, then scroll after a maximum number of lines.
+
+For AppKit, keep a strong reference to the component and let Auto Layout use the
+view's intrinsic height:
+
+```swift
+let component = try VikerEditorComponent(
+    url: fileURL,
+    configuration: VikerEditorConfiguration(
+        toolbarItems: [],
+        loadsLSPs: false,
+        initialMode: .insert,
+        disablesNormalMode: true,
+        showsLineNumbers: false,
+        enablesSlashCommandSuggestions: true,
+        sizingBehavior: .contentHeight(minVisibleLines: 4, maxVisibleLines: 12)
+    )
+)
+
+component.view.translatesAutoresizingMaskIntoConstraints = false
+containerView.addSubview(component.view)
+
+NSLayoutConstraint.activate([
+    component.view.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+    component.view.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+    component.view.topAnchor.constraint(equalTo: containerView.topAnchor),
+    component.view.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
+])
+```
+
+For SwiftUI, retain the component from the representable coordinator so the
+editor callbacks, autosave, and LSP state stay alive:
+
+```swift
+struct VikerComposerView: NSViewRepresentable {
+    let url: URL
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let component = try! VikerEditorComponent(
+            url: url,
+            configuration: VikerEditorConfiguration(
+                toolbarItems: [],
+                loadsLSPs: false,
+                initialMode: .insert,
+                disablesNormalMode: true,
+                showsLineNumbers: false,
+                sizingBehavior: .contentHeight(minVisibleLines: 4, maxVisibleLines: 12)
+            )
+        )
+        context.coordinator.component = component
+        return component.view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Coordinator {
+        var component: VikerEditorComponent?
+
+        deinit {
+            component?.willClose()
+        }
+    }
+}
+
+VikerComposerView(url: fileURL)
+    .frame(maxWidth: .infinity)
+    .fixedSize(horizontal: false, vertical: true)
+```
+
+Use `.fillsAvailableSpace` or omit `sizingBehavior` for window/tab layouts where
+the parent view should decide the editor's height.
 
 The autosuggestion popup supports arrow-key navigation, `Ctrl-N` / `Ctrl-P`,
 `Return` or `Tab` to accept, and `Esc` to dismiss. LSP completions are requested

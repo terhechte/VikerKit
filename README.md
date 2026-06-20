@@ -102,7 +102,8 @@ The component also includes an AppKit autosuggestion popup for LSP completions,
 `@` context mentions, and opt-in `/` slash commands. Consuming apps can
 register static context actions, commands, or skill entries, or provide dynamic
 suggestions, while file suggestions come from the configured workspace root or
-current file folder.
+current file folder. It also supports full-window sizing and composer-style
+intrinsic height sizing through `VikerEditorConfiguration.sizingBehavior`.
 
 The standalone Swift example in `swift/Example` is a macOS executable package
 that uses `VikerKit` through the local `../VikerKit` package dependency. It can
